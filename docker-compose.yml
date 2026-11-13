@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:16-alpine   # same major version as production (managed Postgres 16)
+    container_name: ota-postgres
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:5432:5432"   # bind to localhost only — DB not exposed to your network
+    volumes:
+      - pgdata:/var/lib/postgresql/data   # data survives container restarts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: ota-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]   # persist BullMQ jobs to disk
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  redisdata:

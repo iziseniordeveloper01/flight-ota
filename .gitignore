@@ -1,0 +1,12 @@
+node_modules/
+.next/
+dist/
+.turbo/
+coverage/
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+# TypeScript incremental build cache
+*.tsbuildinfo
