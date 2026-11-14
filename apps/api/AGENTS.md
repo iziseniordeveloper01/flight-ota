@@ -8,13 +8,22 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
 - Env vars are validated in `src/config/env.ts` (Zod). Add every new var there AND in root `.env.example`.
 - Every external call (Redis, DB, supplier APIs) must have a timeout — use `src/common/with-timeout.ts`. Supplier HTTP calls must also pass an AbortSignal.
 - Use Nest `Logger`, never `console.log`. Never log secrets or passenger documents.
+- Raw SQL only via Prisma tagged templates (`prisma.$queryRaw\`...${value}\``) — never `$queryRawUnsafe` or string concatenation.
+- Escape user input used in LIKE/ILIKE patterns with `escapeLike()` (`src/common/escape-like.ts`).
 
 ## Current modules
 - `config/` env validation
 - `redis/` global ioredis client (`REDIS_CLIENT` token), throttled error logging
 - `health/` GET /v1/health → 200 ok / 503 degraded
-- `common/` shared helpers (withTimeout)
+- `common/` shared helpers: `withTimeout`, `escapeLike` (LIKE wildcard escaping), `ZodValidationPipe` (400 `{ message: 'Validation failed', issues }`)
 - `prisma/` global Prisma client (`PRISMA` token) from `@ota/db`; health pings it with `SELECT 1`
+- `airports/` GET /v1/airports?q=&limit= autocomplete. Zod-validated query; raw SQL with pg_trgm ranking
+  (exact IATA → city/name prefix → large airport → trigram similarity); Redis cache-aside 24h,
+  key prefix `airports:search:v1` (cache failures fall through to the DB). Data: `pnpm --filter @ota/db db:seed`.
+  Extra search terms (old names, misspellings like "Dehli") are hand-maintained in
+  `packages/db/prisma/data/airport-aliases.json` and merged into `keywords` by the seed — never edit
+  `airports.json` by hand (it is regenerated from OurAirports). After changing aliases: re-seed, then
+  delete Redis keys matching `airports:search:*` (not FLUSHALL).
 
 ## Commands (run from repo root)
 - `pnpm --filter @ota/api dev` · `test` · `test:e2e` · `build`

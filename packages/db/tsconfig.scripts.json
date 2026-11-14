@@ -1,0 +1,9 @@
+{
+  // Type-check only: seed and refresh scripts run through tsx, but the build (tsconfig.json) covers src/ alone.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["prisma/seed.ts", "scripts/**/*.ts", "src/**/*.ts"]
+}

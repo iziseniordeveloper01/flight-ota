@@ -1,0 +1,10 @@
+{
+  "BLR": ["Bengaluru", "Bangalore"],
+  "BOM": ["Bombay", "Mumbai"],
+  "CCU": ["Calcutta", "Kolkata"],
+  "DEL": ["Dehli", "Dilli", "Delhi"],
+  "DXB": ["Dubai"],
+  "HYD": ["Hyderabad"],
+  "MAA": ["Madras", "Chennai"],
+  "SIN": ["Singapore", "Singapur"]
+}

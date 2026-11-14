@@ -46,12 +46,19 @@ model Airport {
   latitude    Decimal? @db.Decimal(9, 6)
   longitude   Decimal? @db.Decimal(9, 6)
   type        String   @db.VarChar(20) // large_airport | medium_airport
+  // OurAirports alternate names / old codes (e.g. "Bombay, Sahar"), searched by autocomplete
+  keywords    String?
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@index([countryCode])
   @@index([city])
+  // Trigram GIN indexes let ILIKE '%q%' and similarity/% (fuzzy) use an index instead of a seq scan.
+  // Requires the pg_trgm extension, created manually in the airport_search migration.
+  @@index([name(ops: raw("gin_trgm_ops"))], type: Gin, map: "airports_name_trgm_idx")
+  @@index([city(ops: raw("gin_trgm_ops"))], type: Gin, map: "airports_city_trgm_idx")
+  @@index([keywords(ops: raw("gin_trgm_ops"))], type: Gin, map: "airports_keywords_trgm_idx")
   @@map("airports")
 }
 

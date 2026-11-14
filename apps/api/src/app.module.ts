@@ -3,8 +3,9 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { validateEnv } from './config/env.js';
 import { RedisModule } from './redis/redis.module.js';
-import { HealthModule } from './health/health.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { HealthModule } from './health/health.module.js';
+import { AirportsModule } from './airports/airports.module.js';
 
 @Module({
   imports: [
@@ -17,10 +18,12 @@ import { PrismaModule } from './prisma/prisma.module.js';
       envFilePath: [resolve(import.meta.dirname, '../../../.env')],
       validate: validateEnv,
     }),
+    // Infrastructure (global providers) first, then feature modules.
     RedisModule,
-    HealthModule,
     PrismaModule,
-    // Next steps will add: AuthModule, AirportsModule, SearchModule ...
+    HealthModule,
+    AirportsModule,
+    // Next steps will add: AuthModule, SearchModule ...
   ],
 })
 export class AppModule {}

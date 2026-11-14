@@ -13,10 +13,12 @@
   },
   "scripts": {
     "build": "prisma generate && tsc -p tsconfig.json",
-    "typecheck": "prisma generate && tsc --noEmit",
-    "db:migrate": "prisma migrate dev",
+    "typecheck": "prisma generate && tsc --noEmit && tsc -p tsconfig.scripts.json",
+    "db:migrate": "prisma migrate dev && prisma generate",
     "db:deploy": "prisma migrate deploy",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "db:seed": "prisma db seed",
+    "data:airports": "tsx scripts/refresh-airports.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.1",
@@ -24,9 +26,12 @@
     "pg": "8.23.1"
   },
   "devDependencies": {
+    "@types/node": "^24.19.2",
     "@types/pg": "^8.23.1",
+    "csv-parse": "^7.0.3",
     "dotenv": "^18.0.10",
     "prisma": "7.10.1",
+    "tsx": "^4.23.15",
     "typescript": "^6.0.3"
   }
 }
