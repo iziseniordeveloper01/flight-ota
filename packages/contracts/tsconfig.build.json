@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  // Tests are type-checked by `typecheck` but never shipped in dist.
+  "exclude": ["src/**/*.spec.ts"]
+}

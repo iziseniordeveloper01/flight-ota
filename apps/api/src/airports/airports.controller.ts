@@ -1,11 +1,11 @@
 import { Controller, Get, Query, Res } from '@nestjs/common';
-import type { Response } from 'express';
-import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import {
   searchAirportsQuerySchema,
-  type AirportSuggestion,
+  type AirportSearchResponse,
   type SearchAirportsQuery,
-} from './airports.schema.js';
+} from '@ota/contracts';
+import type { Response } from 'express';
+import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import { AirportsService } from './airports.service.js';
 
 @Controller('airports')
@@ -18,7 +18,7 @@ export class AirportsController {
     @Query(new ZodValidationPipe(searchAirportsQuerySchema)) query: SearchAirportsQuery,
     // passthrough: Nest still serialises the return value; we only need the response for a header.
     @Res({ passthrough: true }) res: Response,
-  ): Promise<{ data: AirportSuggestion[] }> {
+  ): Promise<AirportSearchResponse> {
     const data = await this.airports.search(query);
     // Public, user-independent data: browsers/CDN may reuse it for an hour. Set here rather than
     // with @Header(), which Nest also applies to 400/500 responses — those must never be cached.

@@ -18,6 +18,8 @@ import type {
 
 // Offline, deterministic supplier for development and tests. Same request → same offers
 // (only expiresAt moves with the clock). No network, no Math.random.
+// Stateless: each supplierOfferId encodes the search request + offer index, so price() regenerates
+// the offer on any instance — searches cached in Redis stay selectable across API restarts.
 
 const OFFER_TTL_MS = 20 * 60_000;
 const OFFERS_PER_SEARCH = 10;
@@ -99,9 +101,8 @@ function prng(seed: number): (maxExclusive: number) => number {
   };
 }
 
-interface StoredOffer {
+interface GeneratedOffer {
   offer: FlightOffer;
-  req: SearchRequest;
   // Per-person fare in "cents" (1/100 of the currency major unit) — repricing recomputes from these.
   unitBaseCents: bigint;
   unitTaxCents: bigint;
@@ -115,8 +116,6 @@ export interface MockSupplierOptions {
 export class MockSupplier implements SupplierAdapter {
   readonly name = 'mock' as const;
   private readonly now: () => number;
-  // Filled by search(), read by price(). In-memory only: offers vanish on restart (fine for a mock).
-  private readonly offers = new Map<string, StoredOffer>();
 
   constructor(options: MockSupplierOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -129,8 +128,40 @@ export class MockSupplier implements SupplierAdapter {
       throw new SupplierError('TIMEOUT', this.name, 'Mock supplier timed out (scenario route)');
     }
     if (route === NO_OFFERS_ROUTE) return [];
+    return this.generate(req).map(({ offer }) => offer);
+  }
 
-    this.pruneExpired();
+  async price(supplierOfferId: string, opts: PriceOptions = {}): Promise<PricedOffer> {
+    this.throwIfAborted(opts);
+    const decoded = decodeOfferId(supplierOfferId);
+    if (!decoded) {
+      throw new SupplierError('OFFER_NOT_FOUND', this.name, 'Offer not found');
+    }
+    const { req, idx } = decoded;
+    // UTC date, same rule as the search date bounds in @ota/contracts.
+    if (req.departureDate < new Date(this.now()).toISOString().slice(0, 10)) {
+      throw new SupplierError('OFFER_EXPIRED', this.name, 'Offer has expired (departure date passed)');
+    }
+
+    const generated = this.generate(req)[idx];
+    const { offer, unitBaseCents } = generated;
+    let { unitTaxCents } = generated;
+    if (`${req.origin}-${req.destination}` === PRICE_CHANGE_ROUTE) {
+      // Scenario: the airline raised the fare since search (surcharge lands in taxes).
+      unitTaxCents += (unitBaseCents * PRICE_CHANGE_PCT) / 100n;
+    }
+    const latest: FlightOffer = { ...offer, price: buildPrice(req, unitBaseCents, unitTaxCents) };
+    try {
+      return { ...latest, ...priceChange(opts.previousTotal ?? offer.price.total, latest.price.total) };
+    } catch (err) {
+      // Currency differs from previousTotal: not comparable. Same code as DuffelAdapter.
+      throw new SupplierError('UPSTREAM_ERROR', this.name, (err as Error).message, { cause: err });
+    }
+  }
+
+  // All offers for a request, in a fixed order (the PRNG is sequential, so offer i depends on 0..i-1).
+  private generate(req: SearchRequest): GeneratedOffer[] {
+    const route = `${req.origin}-${req.destination}`;
     const seed = hash(
       [req.origin, req.destination, req.departureDate, req.returnDate ?? '', req.cabin,
         req.adults, req.children, req.infants, req.currency ?? ''].join('|'),
@@ -141,7 +172,7 @@ export class MockSupplier implements SupplierAdapter {
     const outboundMinutes = 60 + (hash(route) % 600);
     const returnMinutes = 60 + (hash(`${req.destination}-${req.origin}`) % 600);
 
-    const result: FlightOffer[] = [];
+    const result: GeneratedOffer[] = [];
     for (let i = 0; i < OFFERS_PER_SEARCH; i++) {
       const fare = FARES[i % FARES.length];
       const stops = i % 2; // alternate direct / 1-stop
@@ -160,7 +191,7 @@ export class MockSupplier implements SupplierAdapter {
       if (stops > 0) unitBaseCents = (unitBaseCents * 85n) / 100n;
       const unitTaxCents = (unitBaseCents * TAX_PCT) / 100n;
 
-      const supplierOfferId = `mk_${seed.toString(36)}_${i}`;
+      const supplierOfferId = encodeOfferId(req, i);
       const offer: FlightOffer = {
         id: `${this.name}:${supplierOfferId}`,
         supplier: this.name,
@@ -176,37 +207,9 @@ export class MockSupplier implements SupplierAdapter {
         requiresInstantPayment: fare.requiresInstantPayment,
         supplierRef: { fareKey: `${seed.toString(36)}-${i}` },
       };
-      this.offers.set(supplierOfferId, { offer, req, unitBaseCents, unitTaxCents });
-      result.push(offer);
+      result.push({ offer, unitBaseCents, unitTaxCents });
     }
     return result;
-  }
-
-  async price(supplierOfferId: string, opts: PriceOptions = {}): Promise<PricedOffer> {
-    this.throwIfAborted(opts);
-    const stored = this.offers.get(supplierOfferId);
-    if (!stored) {
-      throw new SupplierError('OFFER_NOT_FOUND', this.name, `Offer ${supplierOfferId} not found`);
-    }
-    if (Date.parse(stored.offer.expiresAt) <= this.now()) {
-      this.offers.delete(supplierOfferId);
-      throw new SupplierError('OFFER_EXPIRED', this.name, `Offer ${supplierOfferId} has expired`);
-    }
-
-    const { offer, req } = stored;
-    let { unitTaxCents } = stored;
-    const route = `${offer.slices[0].origin}-${offer.slices[0].destination}`;
-    if (route === PRICE_CHANGE_ROUTE) {
-      // Scenario: the airline raised the fare since search (surcharge lands in taxes).
-      unitTaxCents += (stored.unitBaseCents * PRICE_CHANGE_PCT) / 100n;
-    }
-    const latest: FlightOffer = { ...offer, price: buildPrice(req, stored.unitBaseCents, unitTaxCents) };
-    try {
-      return { ...latest, ...priceChange(opts.previousTotal ?? offer.price.total, latest.price.total) };
-    } catch (err) {
-      // Currency differs from previousTotal: not comparable. Same code as DuffelAdapter.
-      throw new SupplierError('UPSTREAM_ERROR', this.name, (err as Error).message, { cause: err });
-    }
   }
 
   private buildSlice(
@@ -263,18 +266,89 @@ export class MockSupplier implements SupplierAdapter {
     };
   }
 
-  private pruneExpired(): void {
-    const now = this.now();
-    for (const [id, { offer }] of this.offers) {
-      if (Date.parse(offer.expiresAt) <= now) this.offers.delete(id);
-    }
-  }
-
   private throwIfAborted(opts: CallOptions): void {
     if (opts.signal?.aborted) {
       throw new SupplierError('TIMEOUT', this.name, 'Mock supplier call aborted');
     }
   }
+}
+
+// Compact offer key carried inside supplierOfferId. Fixed key order → deterministic ids.
+interface OfferKey {
+  o: string;
+  d: string;
+  dep: string;
+  ret?: string;
+  a: number;
+  c: number;
+  i: number;
+  cab: CabinClass;
+  cur?: string;
+  idx: number;
+}
+
+function encodeOfferId(req: SearchRequest, idx: number): string {
+  const key: OfferKey = {
+    o: req.origin,
+    d: req.destination,
+    dep: req.departureDate,
+    ret: req.returnDate, // undefined keys are dropped by JSON.stringify
+    a: req.adults,
+    c: req.children,
+    i: req.infants,
+    cab: req.cabin,
+    cur: req.currency,
+    idx,
+  };
+  return Buffer.from(JSON.stringify(key)).toString('base64url');
+}
+
+// IATA airport or ISO 4217 currency code.
+const CODE3 = /^[A-Z]{3}$/;
+
+function isDate(v: unknown): v is string {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const ms = Date.parse(`${v}T00:00:00Z`);
+  return !Number.isNaN(ms) && new Date(ms).toISOString().startsWith(v); // rejects 2026-02-30
+}
+
+function isCount(v: unknown, min: number, max: number): v is number {
+  return Number.isInteger(v) && (v as number) >= min && (v as number) <= max;
+}
+
+// The id arrives from outside (via the API), so validate every field: a forged or corrupt id must
+// become OFFER_NOT_FOUND, never an exception or a nonsense offer.
+function decodeOfferId(id: string): { req: SearchRequest; idx: number } | null {
+  let k: Partial<Record<keyof OfferKey, unknown>>;
+  try {
+    k = JSON.parse(Buffer.from(id, 'base64url').toString('utf8'));
+  } catch {
+    return null;
+  }
+  if (typeof k !== 'object' || k === null) return null;
+  const { o, d, dep, ret, a, c, i, cab, cur, idx } = k;
+  if (typeof o !== 'string' || !CODE3.test(o) || typeof d !== 'string' || !CODE3.test(d) || o === d) {
+    return null;
+  }
+  if (!isDate(dep) || (ret !== undefined && (!isDate(ret) || ret < dep))) return null;
+  if (!isCount(a, 1, 9) || !isCount(c, 0, 8) || !isCount(i, 0, a)) return null;
+  if (typeof cab !== 'string' || !Object.hasOwn(CABIN_MULTIPLIER, cab)) return null;
+  if (cur !== undefined && (typeof cur !== 'string' || !CODE3.test(cur))) return null;
+  if (!isCount(idx, 0, OFFERS_PER_SEARCH - 1)) return null;
+  return {
+    req: {
+      origin: o,
+      destination: d,
+      departureDate: dep,
+      returnDate: ret,
+      adults: a,
+      children: c,
+      infants: i,
+      cabin: cab as CabinClass,
+      currency: cur,
+    },
+    idx,
+  };
 }
 
 // Only valid for two local times at the same (mock) airport clock.

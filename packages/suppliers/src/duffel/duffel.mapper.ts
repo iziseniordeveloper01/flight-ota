@@ -120,8 +120,9 @@ function toSegment(segment: OfferSliceSegment, fallbackCabin: CabinClass): Segme
   };
 }
 
-function carrier(airline: { iata_code: string | null; name: string }): Carrier {
-  return { code: airline.iata_code ?? '', name: airline.name };
+function carrier(airline: { iata_code: string | null; name: string; logo_symbol_url: string | null }): Carrier {
+  // The symbol (square mark) suits small inline sizes better than logo_lockup_url (mark + wordmark).
+  return { code: airline.iata_code ?? '', name: airline.name, logoUrl: airline.logo_symbol_url ?? undefined };
 }
 
 function money(amount: string, currency: string): Money {

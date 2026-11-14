@@ -6,7 +6,9 @@ through constructors), ESM + NodeNext, Vitest.
 ## Layout
 - `src/types.ts` normalized domain types · `src/adapter.ts` `SupplierAdapter` · `src/errors.ts` `SupplierError`
 - `src/money.ts` BigInt decimal-string money helpers · `src/call.ts` `callSignal()` (timeout + caller abort)
-- `src/mock/` deterministic offline supplier. Scenario routes: PVD→RAI no offers, STN→LHR TIMEOUT,
+- `src/mock/` deterministic, stateless offline supplier: `supplierOfferId` is base64url JSON of the
+  search request + offer index, and `price()` regenerates the offer from it (survives restarts; past
+  departure date → OFFER_EXPIRED). Scenario routes: PVD→RAI no offers, STN→LHR TIMEOUT,
   LHR→STN price rises on `price()`
 - `src/duffel/` Duffel via native `fetch` (REST, `Duffel-Version: v2`)
 

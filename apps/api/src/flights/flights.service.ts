@@ -19,7 +19,7 @@ import {
   type SupplierName,
 } from '@ota/suppliers';
 import { JsonCacheService } from '../redis/json-cache.service.js';
-import type { SearchFlightsBody } from './flights.schema.js';
+import type { SearchFlightsBody } from '@ota/contracts';
 import { SUPPLIER_ADAPTER } from './supplier.provider.js';
 
 // Prices are volatile: a short search TTL, and never longer than the offers stay valid.

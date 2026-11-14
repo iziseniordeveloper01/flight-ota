@@ -123,12 +123,50 @@ describe('MockSupplier', () => {
     expect(toMinor(priced.price.total.amount, 2)).toBeGreaterThan(toMinor(offer.price.total.amount, 2));
   });
 
-  it('price() for an unknown id → OFFER_NOT_FOUND; after expiry → OFFER_EXPIRED', async () => {
+  it('price() works on a fresh MockSupplier instance (simulated API restart)', async () => {
+    const req: SearchRequest = { ...base, returnDate: '2026-12-27', cabin: 'premium_economy', currency: 'EUR' };
+    const offers = await new MockSupplier({ now: () => NOW }).search(req);
+    const later = new MockSupplier({ now: () => NOW + 5 * 60_000 });
+    for (const offer of offers) {
+      expect(offer.supplierOfferId).toMatch(/^[A-Za-z0-9_-]+$/);
+      const priced = await later.price(offer.supplierOfferId, { previousTotal: offer.price.total });
+      const { expiresAt: _a, ...expected } = offer;
+      const { expiresAt: _b, priceChanged, ...actual } = priced;
+      expect(priceChanged).toBe(false);
+      expect(actual).toEqual(expected);
+    }
+    // LHR→STN keeps its price-change scenario after a restart too.
+    const [lhr] = await new MockSupplier({ now: () => NOW }).search({ ...base, origin: 'LHR', destination: 'STN' });
+    const repriced = await later.price(lhr.supplierOfferId, { previousTotal: lhr.price.total });
+    expect(repriced.priceChanged).toBe(true);
+  });
+
+  it('price() for an undecodable or invalid id → OFFER_NOT_FOUND', async () => {
+    const supplier = new MockSupplier({ now: () => NOW });
+    const [offer] = await supplier.search(base);
+    const key = JSON.parse(Buffer.from(offer.supplierOfferId, 'base64url').toString());
+    const forged = (patch: object) => Buffer.from(JSON.stringify({ ...key, ...patch })).toString('base64url');
+    for (const id of [
+      'mk_nope_0',
+      Buffer.from('not json').toString('base64url'),
+      Buffer.from('null').toString('base64url'),
+      forged({ idx: 10 }),
+      forged({ cab: 'toString' }),
+      forged({ dep: '2026-02-30' }),
+      forged({ i: 3 }), // more infants than adults
+      forged({ o: 'del' }),
+    ]) {
+      expect(await codeOf(supplier.price(id))).toBe('OFFER_NOT_FOUND');
+    }
+  });
+
+  it('price() once the departure date has passed → OFFER_EXPIRED', async () => {
     let now = NOW;
     const supplier = new MockSupplier({ now: () => now });
-    expect(await codeOf(supplier.price('mk_nope_0'))).toBe('OFFER_NOT_FOUND');
-    const [offer] = await supplier.search(base);
-    now += 21 * 60_000;
+    const [offer] = await supplier.search(base); // departs 2026-12-20
+    now = Date.parse('2026-12-20T23:59:59Z');
+    await expect(supplier.price(offer.supplierOfferId)).resolves.toBeDefined();
+    now = Date.parse('2026-12-21T00:00:00Z');
     expect(await codeOf(supplier.price(offer.supplierOfferId))).toBe('OFFER_EXPIRED');
   });
 });

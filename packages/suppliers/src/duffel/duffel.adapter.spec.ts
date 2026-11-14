@@ -4,6 +4,12 @@ import type { SearchRequest } from '../types.js';
 import { oneWayOffer, returnOffer } from './__fixtures__/offers.js';
 import { DuffelAdapter } from './duffel.adapter.js';
 
+const ZZ_CARRIER = {
+  code: 'ZZ',
+  name: 'Duffel Airways',
+  logoUrl: 'https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/ZZ.svg',
+};
+
 const TOKEN = 'duffel_test_SECRET_DO_NOT_LEAK';
 const req: SearchRequest = {
   origin: 'LHR',
@@ -68,7 +74,7 @@ describe('DuffelAdapter.search', () => {
         base: { amount: '420.00', currency: 'GBP' },
         taxes: { amount: '92.34', currency: 'GBP' },
       },
-      owner: { code: 'ZZ', name: 'Duffel Airways' },
+      owner: ZZ_CARRIER,
       slices: [
         {
           origin: 'LHR',
@@ -79,8 +85,8 @@ describe('DuffelAdapter.search', () => {
           stops: 0,
           segments: [
             {
-              marketingCarrier: { code: 'ZZ', name: 'Duffel Airways' },
-              operatingCarrier: { code: 'ZZ', name: 'Duffel Airways' },
+              marketingCarrier: ZZ_CARRIER,
+              operatingCarrier: ZZ_CARRIER,
               flightNumber: '0117',
               origin: 'LHR',
               destination: 'JFK',
@@ -106,6 +112,13 @@ describe('DuffelAdapter.search', () => {
       },
     });
     expect(offer.price.perPassenger).toBeUndefined(); // Duffel gives no breakdown — never faked
+  });
+
+  it('leaves logoUrl undefined when Duffel has no logo for the airline', async () => {
+    const noLogo = { ...oneWayOffer, owner: { ...oneWayOffer.owner, logo_symbol_url: null } };
+    const { adapter } = adapterWith(() => json(201, { data: { offers: [noLogo] } }));
+    const [offer] = await adapter.search(req);
+    expect(offer.owner.logoUrl).toBeUndefined();
   });
 
   it('maps a return offer with a connection', async () => {

@@ -1,10 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
+import type { AirportSuggestion, SearchAirportsQuery } from '@ota/contracts';
 import type { PrismaClient } from '@ota/db';
 import { escapeLike } from '../common/escape-like.js';
 import { withTimeout } from '../common/with-timeout.js';
 import { PRISMA } from '../prisma/prisma.module.js';
 import { JsonCacheService } from '../redis/json-cache.service.js';
-import type { AirportSuggestion, SearchAirportsQuery } from './airports.schema.js';
 
 // Airport data changes only when we re-seed, so a long TTL is safe.
 // Bump the "v1" segment when the result shape or ranking changes, to orphan stale entries.

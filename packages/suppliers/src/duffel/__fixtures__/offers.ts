@@ -9,8 +9,8 @@ const airline = (iata: string, name: string) => ({
   id: `arl_${iata}`,
   iata_code: iata,
   name,
-  logo_lockup_url: null,
-  logo_symbol_url: null,
+  logo_lockup_url: `https://assets.duffel.com/img/airlines/for-light-background/full-color-lockup/${iata}.svg`,
+  logo_symbol_url: `https://assets.duffel.com/img/airlines/for-light-background/full-color-logo/${iata}.svg`,
   conditions_of_carriage_url: null,
 });
 

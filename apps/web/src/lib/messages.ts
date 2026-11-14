@@ -1,0 +1,208 @@
+// Every user-facing UI string lives here (English only for now). When i18n arrives (next-intl),
+// this object becomes the "en" catalogue and the helper functions become ICU messages.
+// The brand name is NOT here: it comes from NEXT_PUBLIC_BRAND_NAME (see src/env.ts).
+
+import type { CabinClass, PassengerType } from '@ota/contracts';
+
+/** Locale for dates and numbers. en-IN: "Mon, 15 Dec", "$402.00", "₹1,23,456.00". */
+export const LOCALE = 'en-IN';
+
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+export const messages = {
+  meta: {
+    tagline: 'Cheap flights, clearly priced',
+    description:
+      'Search and compare flights from hundreds of airlines. Clear prices, no surprises at checkout.',
+    resultsTitle: 'Flight results',
+  },
+  nav: {
+    home: 'Home',
+    skipToContent: 'Skip to content',
+  },
+  home: {
+    heroTitle: 'Where are you flying next?',
+    heroSubtitle: 'Compare fares from many airlines in one search. The price you see is the total.',
+    trustTitle: 'Why book with us',
+    trust: [
+      { title: 'Total price up front', body: 'Taxes and fees are included in every price we show.' },
+      { title: 'Fares re-checked live', body: 'We confirm the price with the airline before you pay.' },
+      { title: 'Built for your phone', body: 'Search, compare and choose in a few taps, anywhere.' },
+    ],
+  },
+  footer: {
+    note: 'Demo project. Prices and flights shown in demo mode are test data.',
+    rights: (year: number, brand: string) => `© ${year} ${brand}`,
+  },
+  search: {
+    title: 'Search flights',
+    oneWay: 'One-way',
+    roundTrip: 'Round trip',
+    tripType: 'Trip type',
+    from: 'From',
+    to: 'To',
+    // Short: the field label already says From/To, and lg fields are ~200px wide.
+    fromPlaceholder: 'City or airport',
+    toPlaceholder: 'City or airport',
+    swap: 'Swap departure and arrival',
+    depart: 'Depart',
+    return: 'Return',
+    datesTitle: 'Choose dates',
+    datePlaceholder: 'Add date',
+    returnPlaceholder: 'Add return',
+    travellers: 'Travellers',
+    travellersTitle: 'Travellers and cabin',
+    cabin: 'Cabin',
+    submit: 'Search flights',
+    done: 'Done',
+    recent: 'Recent searches',
+    returnRequired: 'Choose a return date',
+    airportRequired: 'Choose an airport',
+    dateRequired: 'Choose a departure date',
+    sameAirport: 'Arrival must differ from departure',
+  },
+  airport: {
+    searchLabel: (field: string) => `Search ${field.toLowerCase()} airport`,
+    inputPlaceholder: 'City, airport or code',
+    minChars: 'Type at least 2 characters',
+    loading: 'Searching airports…',
+    noResults: 'No airports found. Try a city name or 3-letter code.',
+    error: 'Could not load airports. Check your connection and try again.',
+  },
+  pax: {
+    adults: 'Adults',
+    adultsHint: '12+ years',
+    children: 'Children',
+    childrenHint: '2–11 years',
+    infants: 'Infants',
+    infantsHint: 'Under 2, on lap',
+    add: (label: string) => `Add one: ${label}`,
+    remove: (label: string) => `Remove one: ${label}`,
+    maxSeated: (max: number) => `Up to ${max} adults and children per booking`,
+    infantsPerAdult: 'Each infant must travel with an adult (one infant per adult)',
+    minAdult: 'At least one adult is required',
+    summary: (adults: number, children: number, infants: number) =>
+      [
+        plural(adults, 'adult', 'adults'),
+        children ? plural(children, 'child', 'children') : null,
+        infants ? plural(infants, 'infant', 'infants') : null,
+      ]
+        .filter(Boolean)
+        .join(', '),
+    travellers: (n: number) => plural(n, 'traveller', 'travellers'),
+  },
+  cabin: {
+    economy: 'Economy',
+    premium_economy: 'Premium economy',
+    business: 'Business',
+    first: 'First',
+  } satisfies Record<CabinClass, string>,
+  passengerType: {
+    adult: 'Adult',
+    child: 'Child',
+    infant: 'Infant',
+  } satisfies Record<PassengerType, string>,
+  results: {
+    edit: 'Edit',
+    editTitle: 'Edit search',
+    dateStrip: 'Change departure date',
+    count: (n: number) => plural(n, 'flight', 'flights'),
+    demo: 'Demo mode — prices and flights are test data, not bookable.',
+    invalidTitle: 'We could not read this search',
+    invalidBody: 'Some search details are missing or out of range.',
+    backHome: 'Start a new search',
+    emptyTitle: 'No flights found',
+    emptyBody: 'Try different dates or nearby airports.',
+    filteredEmptyTitle: 'No flights match your filters',
+    resetFilters: 'Reset filters',
+    retry: 'Try again',
+    loading: 'Searching for the best fares…',
+    mixedCurrency: 'Prices are in more than one currency, so they are grouped by currency.',
+  },
+  errors: {
+    timeout: 'Airline is taking too long. Please try again.',
+    unavailable: 'Supplier unavailable. Please try again in a moment.',
+    network: 'You seem to be offline. Check your connection and try again.',
+    server: 'Something went wrong on our side. Please try again.',
+    notFound: 'We could not find what you were looking for.',
+    validation: 'Some search details are not valid.',
+    expired: 'This fare has expired',
+  },
+  sort: {
+    label: 'Sort flights',
+    recommended: 'Recommended',
+    cheapest: 'Cheapest',
+    fastest: 'Fastest',
+  },
+  filters: {
+    title: 'Filters',
+    button: (n: number) => (n > 0 ? `Filters (${n})` : 'Filters'),
+    apply: 'Apply',
+    applyCount: (n: number) => `Show ${plural(n, 'flight', 'flights')}`,
+    reset: 'Reset',
+    stops: 'Stops',
+    stopsLabel: { 0: 'Direct', 1: '1 stop', 2: '2+ stops' } as Record<0 | 1 | 2, string>,
+    airlines: 'Airlines',
+    departure: 'Departure time',
+    departureNote: 'Outbound, local time at the airport',
+    timeBucket: {
+      night: 'Night 00–06',
+      morning: 'Morning 06–12',
+      afternoon: 'Afternoon 12–18',
+      evening: 'Evening 18–24',
+    },
+    price: 'Price',
+    priceRange: (min: string, max: string) => `${min} – ${max}`,
+    priceMin: 'Minimum price',
+    priceMax: 'Maximum price',
+    refundable: 'Refundable only',
+    from: (price: string) => `from ${price}`,
+  },
+  offer: {
+    select: 'Select',
+    selectLabel: (airline: string, price: string) => `Select ${airline} flight for ${price}`,
+    direct: 'Direct',
+    stops: (n: number) => plural(n, 'stop', 'stops'),
+    via: (codes: string) => `via ${codes}`,
+    nextDay: (n: number) => `+${n}`,
+    nextDayLabel: (n: number) => `arrives ${plural(n, 'day', 'days')} later`,
+    outbound: 'Outbound',
+    return: 'Return',
+    checkedBag: (pieces: number, kg?: number) =>
+      `${plural(pieces, 'checked bag', 'checked bags')}${kg ? ` · ${kg} kg` : ''}`,
+    noCheckedBag: 'No checked bag',
+    cabinBag: (pieces: number) => plural(pieces, 'cabin bag', 'cabin bags'),
+    refundable: 'Refundable',
+    nonRefundable: 'Non-refundable',
+    changeable: 'Changes allowed',
+    nonChangeable: 'No changes',
+    operatedBy: (names: string) => `Operated by ${names}`,
+    unknownPolicy: 'Not provided by the airline',
+    totalPrice: 'total price',
+    totalFor: (n: number) => `total for ${plural(n, 'traveller', 'travellers')}`,
+    duration: (minutes: number) => {
+      const h = Math.floor(minutes / 60);
+      const m = minutes % 60;
+      return h === 0 ? `${m}m` : m === 0 ? `${h}h` : `${h}h ${m}m`;
+    },
+  },
+  details: {
+    title: 'Flight details',
+    loading: 'Checking the latest price with the airline…',
+    priceUpdated: (from: string, to: string) => `Price updated from ${from} to ${to}`,
+    priceConfirmed: 'Price confirmed with the airline',
+    terminal: (t: string) => `Terminal ${t}`,
+    flight: (code: string, number: string) => `${code} ${number}`,
+    layover: (minutes: string, airport: string) => `${minutes} connection in ${airport}`,
+    baggage: 'Baggage',
+    policies: 'Changes and refunds',
+    priceBreakdown: 'Price breakdown',
+    base: 'Fare',
+    taxes: 'Taxes and fees',
+    total: 'Total',
+    expiredBody: 'Fares change quickly. Refresh the search to see current prices.',
+    refresh: 'Refresh search',
+    continue: 'Continue to booking',
+    comingSoon: 'Booking coming soon',
+  },
+} as const;

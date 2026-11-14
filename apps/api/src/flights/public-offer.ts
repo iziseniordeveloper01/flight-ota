@@ -1,6 +1,5 @@
+import type { PublicOffer } from '@ota/contracts';
 import type { FlightOffer } from '@ota/suppliers';
-
-export type PublicOffer<T extends FlightOffer = FlightOffer> = Omit<T, 'supplierRef'>;
 
 /**
  * Strip server-only supplier context (booking tokens, passenger ids) before an offer leaves the

@@ -34,6 +34,8 @@ export interface Carrier {
   /** IATA airline code, e.g. "BA". */
   code: string;
   name: string;
+  /** Square airline logo (absolute https URL) when the supplier provides one. */
+  logoUrl?: string;
 }
 
 /**

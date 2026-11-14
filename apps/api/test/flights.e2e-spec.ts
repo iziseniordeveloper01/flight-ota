@@ -29,8 +29,9 @@ describe('Flights (e2e)', () => {
     if (redis.status !== 'ready') {
       await new Promise<void>((resolve) => redis.once('ready', () => resolve()));
     }
-    // Results cached by an earlier run would reference offers this fresh MockSupplier never
-    // produced (its offer map is in-memory). Delete only flights keys — never FLUSHALL.
+    // Start from an empty flights cache: a previous run leaves cached searches (breaks the
+    // `cached: false` assertion) and re-priced offers (LHR→STN would then compare against the
+    // already-raised price). Delete only flights keys — never FLUSHALL.
     let cursor = '0';
     do {
       const [next, keys] = await redis.scan(cursor, 'MATCH', 'flights:*', 'COUNT', 500);
@@ -124,6 +125,20 @@ describe('Flights (e2e)', () => {
     expect(res.body.data.priceChanged).toBe(true);
     expect(res.body.data.previousTotal).toEqual(first.price.total);
     expect(compareMoney(res.body.data.price.total, first.price.total)).toBe(1);
+  });
+
+  it('longest mock offer id (round trip, premium_economy, currency) passes validation → 200', async () => {
+    const { body } = await search({
+      ...oneWay,
+      returnDate: daysAhead(37),
+      adults: 9,
+      infants: 9,
+      cabin: 'premium_economy',
+      currency: 'EUR',
+    }).expect(200);
+    const first = body.data[0] as FlightOffer;
+    const res = await getOffer(first.id).expect(200);
+    expect(res.body.data.priceChanged).toBe(false);
   });
 
   it('unknown offer id → 410', async () => {

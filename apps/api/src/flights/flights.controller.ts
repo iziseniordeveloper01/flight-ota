@@ -1,25 +1,14 @@
 import { Body, Controller, Get, Header, HttpCode, Param, Post } from '@nestjs/common';
-import type { PricedOffer, SupplierName } from '@ota/suppliers';
+import {
+  offerIdSchema,
+  searchFlightsSchema,
+  type OfferResponse,
+  type SearchFlightsBody,
+  type SearchFlightsResponse,
+} from '@ota/contracts';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
-import { offerIdSchema, searchFlightsSchema, type SearchFlightsBody } from './flights.schema.js';
 import { FlightsService } from './flights.service.js';
-import { toPublicOffer, type PublicOffer } from './public-offer.js';
-
-interface SearchResponse {
-  data: PublicOffer[];
-  meta: {
-    supplier: SupplierName;
-    cached: boolean;
-    count: number;
-    currency: string | null;
-    demo: boolean;
-  };
-}
-
-interface OfferResponse {
-  data: PublicOffer<PricedOffer>;
-  meta: { supplier: SupplierName; demo: boolean };
-}
+import { toPublicOffer } from './public-offer.js';
 
 // Prices are volatile and per-request: every handler sends Cache-Control: no-store
 // (@Header is also applied to error responses, which is what we want here).
@@ -35,7 +24,7 @@ export class FlightsController {
   @Header(...NO_STORE)
   async search(
     @Body(new ZodValidationPipe(searchFlightsSchema)) body: SearchFlightsBody,
-  ): Promise<SearchResponse> {
+  ): Promise<SearchFlightsResponse> {
     const { offers, cached, currency } = await this.flights.search(body);
     return {
       data: offers.map(toPublicOffer),

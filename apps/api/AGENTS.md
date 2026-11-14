@@ -12,6 +12,8 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
 - Flight data only via the `SUPPLIER_ADAPTER` token (`SupplierAdapter` from `@ota/suppliers`) — never import
   `DuffelAdapter`/`MockSupplier` outside `flights/supplier.provider.ts`.
 - Offers leave the API only through `toPublicOffer()` (strips `supplierRef`).
+- Request schemas (`searchAirportsQuerySchema`, `searchFlightsSchema`, `offerIdSchema`) and response types/
+  envelopes come from `@ota/contracts` — the web app validates with the same schemas. Don't define them here.
 - Caching goes through `JsonCacheService` (`src/redis/json-cache.service.ts`): failures are a miss, never an error.
 - Use Nest `Logger`, never `console.log`. Never log secrets or passenger documents.
 - Raw SQL only via Prisma tagged templates (`prisma.$queryRaw\`...${value}\``) — never `$queryRawUnsafe` or string concatenation.

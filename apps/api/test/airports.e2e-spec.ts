@@ -6,7 +6,7 @@ import { Redis } from 'ioredis';
 import { AppModule } from './../src/app.module.js';
 import { configureApp } from './../src/app.setup.js';
 import { REDIS_CLIENT } from './../src/redis/redis.module.js';
-import type { AirportSuggestion } from './../src/airports/airports.schema.js';
+import type { AirportSuggestion } from '@ota/contracts';
 
 // Requires the seeded database (pnpm --filter "@ota/db" db:seed) and Redis running.
 describe('Airports (e2e)', () => {

@@ -1,0 +1,40 @@
+/*
+ * DESIGN TOKENS — the only place brand colours live.
+ * To rebrand: change the values below (keep text/background pairs at WCAG AA, >= 4.5:1).
+ * globals.css maps these onto Tailwind (`bg-primary`, `text-muted-foreground`, ...) and the
+ * shadcn/ui components; components never hard-code colours.
+ * Contrast notes are against the paired background.
+ * One exception: src/app/icon.svg (favicon) repeats --primary, since favicons can't read CSS vars.
+ */
+:root {
+  /* Brand */
+  --primary: #0e7490; /* teal 700 — white text 5.4:1 */
+  --primary-foreground: #ffffff;
+  --primary-strong: #155e75; /* hover/pressed */
+  --accent: #ecfeff; /* light teal surfaces (selected chips, highlights) */
+  --accent-foreground: #155e75; /* on --accent 7.9:1 */
+
+  /* Neutrals */
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --secondary: #f1f5f9;
+  --secondary-foreground: #0f172a;
+  --muted: #f1f5f9;
+  --muted-foreground: #475569; /* on white 7.6:1, on --muted 6.9:1 */
+  --border: #e2e8f0;
+  --input: #7b8794; /* form control outline: 3.6:1 (WCAG 1.4.11 needs 3:1) */
+  --ring: #0e7490;
+
+  /* Status */
+  --destructive: #b91c1c; /* 6.5:1 on white */
+  --success: #15803d; /* 5.0:1 on white */
+  --warning: #fffbeb;
+  --warning-foreground: #92400e; /* on --warning 6.8:1 */
+
+  /* Shape */
+  --radius: 0.75rem;
+}

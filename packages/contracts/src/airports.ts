@@ -16,3 +16,8 @@ export interface AirportSuggestion {
   countryCode: string;
   type: string;
 }
+
+/** GET /v1/airports */
+export interface AirportSearchResponse {
+  data: AirportSuggestion[];
+}
