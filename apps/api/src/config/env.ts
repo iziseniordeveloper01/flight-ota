@@ -26,6 +26,16 @@ const envSchema = z
       .trim()
       .optional()
       .transform((v) => v || undefined),
+    // AES-256-GCM key for passenger PII (DOB, passport numbers): base64 of exactly 32 random bytes.
+    // Generate: node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+    BOOKING_DATA_KEY: z
+      .string()
+      .trim()
+      .refine((v) => /^[A-Za-z0-9+/]+={0,2}$/.test(v) && Buffer.from(v, 'base64').length === 32, {
+        message: 'must be base64 that decodes to exactly 32 bytes',
+      }),
+    // Travel insurance provider. Only the clearly-labelled demo provider exists for now.
+    INSURANCE_PROVIDER: z.enum(['demo']).default('demo'),
   })
   .superRefine((env, ctx) => {
     // Messages never echo the value: validation output ends up in deploy logs.

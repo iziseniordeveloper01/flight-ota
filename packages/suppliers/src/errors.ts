@@ -1,4 +1,4 @@
-import type { SupplierName } from './types.js';
+import type { Money, SupplierName } from './types.js';
 
 export type SupplierErrorCode =
   | 'TIMEOUT'
@@ -6,7 +6,9 @@ export type SupplierErrorCode =
   | 'OFFER_NOT_FOUND'
   | 'INVALID_REQUEST'
   | 'UNAVAILABLE'
-  | 'UPSTREAM_ERROR';
+  | 'UPSTREAM_ERROR'
+  /** createOrder: the supplier's total differs from expectedTotal. */
+  | 'PRICE_CHANGED';
 
 /**
  * The only error type adapters may throw. Every supplier-specific failure is mapped to one of
@@ -14,13 +16,17 @@ export type SupplierErrorCode =
  * Messages must never contain credentials or passenger data.
  */
 export class SupplierError extends Error {
+  /** PRICE_CHANGED only, when known: what the supplier now charges for the same fare + services. */
+  readonly newTotal?: Money;
+
   constructor(
     readonly code: SupplierErrorCode,
     readonly supplier: SupplierName,
     message: string,
-    options?: { cause?: unknown },
+    options?: { cause?: unknown; newTotal?: Money },
   ) {
     super(message, options);
     this.name = 'SupplierError';
+    this.newTotal = options?.newTotal;
   }
 }

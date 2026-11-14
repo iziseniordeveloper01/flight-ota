@@ -45,6 +45,8 @@ export interface Carrier {
  * Never compare them across airports or parse them as UTC; use `durationMinutes` for elapsed time.
  */
 export interface Segment {
+  /** Supplier's segment id within this offer (Duffel "seg_…"); links bags/seats to a flight. Opaque. */
+  ref: string;
   marketingCarrier: Carrier;
   operatingCarrier: Carrier;
   /** Marketing carrier's flight number without the airline code, e.g. "117". */
@@ -106,6 +108,11 @@ export interface FlightOffer {
   /** Validating / selling carrier. */
   owner: Carrier;
   slices: Slice[];
+  /**
+   * The passenger slots this offer was priced for, in search order (adults, children, infants).
+   * `ref` is the supplier's opaque passenger id; bags, seats and orders refer to passengers by it.
+   */
+  passengers: OfferPassenger[];
   baggage?: BaggageAllowance;
   fareBrand?: string;
   /** null = the supplier gave no information. */
@@ -124,6 +131,125 @@ export type PricedOffer = FlightOffer & {
   /** The total the caller saw before re-pricing, set when the price changed. */
   previousTotal?: Money;
 };
+
+export interface OfferPassenger {
+  ref: string;
+  type: PassengerType;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Booking: ancillaries, seat maps, orders. Same rule as above — normalized, never supplier-shaped.
+
+/** An extra bag that can be added to an order. Price is per unit; one unit covers all `segmentRefs`. */
+export interface BagOption {
+  serviceId: string;
+  passengerRef: string;
+  segmentRefs: string[];
+  /** Per unit, e.g. "23kg checked bag". */
+  label: string;
+  weightKg?: number;
+  maxQuantity: number;
+  price: Money;
+}
+
+export interface PassengerRequirements {
+  /** true/false when the supplier says; null when it doesn't (the caller decides, e.g. international trips). */
+  identityDocumentRequired: boolean | null;
+  /** Longest given/family name the supplier accepts; null = no supplier-specific limit. */
+  maxNameLength: number | null;
+}
+
+export interface Ancillaries {
+  bags: BagOption[];
+  seatsAvailable: boolean;
+  passengerRequirements: PassengerRequirements;
+}
+
+/** Seats are priced per passenger (a child seat may cost less), so each passenger has its own service. */
+export interface SeatService {
+  passengerRef: string;
+  serviceId: string;
+  price: Money;
+}
+
+export type SeatMapElement =
+  | {
+      type: 'seat';
+      /** Row number + column letter, e.g. "14C". */
+      designator: string;
+      /** false when no passenger can book it (services is empty). */
+      available: boolean;
+      /** Airline's description, e.g. "Extra legroom". */
+      name?: string;
+      /** Airline terms shown to the customer (e.g. exit-row restrictions). */
+      disclosures?: string[];
+      services: SeatService[];
+    }
+  | { type: 'gap' }
+  | { type: 'exit' }
+  | { type: 'facility'; kind: 'lavatory' | 'galley' | 'closet' | 'stairs' | 'bassinet' };
+
+export interface SeatMapRow {
+  /** null for rows without seats (exit markers, galleys). */
+  number: number | null;
+  /** Sections are split by aisles. */
+  sections: Array<{ elements: SeatMapElement[] }>;
+}
+
+export interface SeatMap {
+  segmentRef: string;
+  /** Ordered by deck (0 = main), then front to back. */
+  cabins: Array<{ deck: number; rows: SeatMapRow[] }>;
+}
+
+export interface OrderPassenger {
+  /** OfferPassenger.ref of the slot this person fills. */
+  ref: string;
+  type: PassengerType;
+  title: 'mr' | 'mrs' | 'ms' | 'miss';
+  gender: 'm' | 'f';
+  givenName: string;
+  /** null for mononyms; each adapter applies its supplier's convention. */
+  familyName: string | null;
+  /** YYYY-MM-DD */
+  dateOfBirth: string;
+  /** ISO 3166-1 alpha-2 */
+  nationality: string;
+  document?: { type: 'passport'; number: string; issuingCountry: string; expiryDate: string };
+  /** Infants only: ref of the adult whose lap they travel on. */
+  associatedAdultRef?: string;
+}
+
+export interface CreateOrderInput {
+  supplierOfferId: string;
+  supplierRef: Record<string, unknown>;
+  passengers: OrderPassenger[];
+  contact: { email: string; phone: string };
+  services: Array<{ serviceId: string; quantity: number }>;
+  /** Fare + services the customer agreed to. A different supplier total → SupplierError PRICE_CHANGED. */
+  expectedTotal: Money;
+  /** Unique per booking; stored with the supplier order so a lost response can be found again. */
+  idempotencyKey: string;
+}
+
+export interface OrderResult {
+  supplierOrderId: string;
+  /** Airline booking reference; null while the supplier is still confirming. */
+  pnr: string | null;
+  status: 'confirmed' | 'pending';
+  total: Money;
+}
+
+/**
+ * Finds an order created by createOrder(). After a timeout we have no supplierOrderId, so adapters
+ * search by what they stored at creation (idempotencyKey) plus the lead passenger's name.
+ */
+export interface OrderLookup {
+  supplierOrderId?: string;
+  idempotencyKey: string;
+  leadPassenger: { givenName: string; familyName: string | null };
+  expectedTotal: Money;
+}
 
 export interface CallOptions {
   /** Caller-side cancellation (e.g. the HTTP client went away). */

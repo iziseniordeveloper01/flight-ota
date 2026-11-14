@@ -7,6 +7,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
 import { HealthModule } from './health/health.module.js';
 import { AirportsModule } from './airports/airports.module.js';
 import { FlightsModule } from './flights/flights.module.js';
+import { BookingsModule } from './bookings/bookings.module.js';
 
 @Module({
   imports: [
@@ -25,7 +26,8 @@ import { FlightsModule } from './flights/flights.module.js';
     HealthModule,
     AirportsModule,
     FlightsModule,
-    // Next steps will add: AuthModule, BookingModule ...
+    BookingsModule,
+    // Next steps will add: AuthModule, PaymentsModule ...
   ],
 })
 export class AppModule {}

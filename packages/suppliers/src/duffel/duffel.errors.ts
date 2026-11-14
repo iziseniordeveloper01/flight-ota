@@ -3,7 +3,11 @@ import { SupplierError, type SupplierErrorCode } from '../errors.js';
 import type { ApiResponseError } from './duffel.types.js';
 
 // Duffel error codes meaning "this offer can no longer be booked/priced".
-const EXPIRED_CODES = new Set(['offer_no_longer_available', 'offer_expired']);
+// order_creation_already_attempted: another order was already tried for an offer from the same
+// search (e.g. a second booking of the same offer) — a fresh search is needed.
+const EXPIRED_CODES = new Set(['offer_no_longer_available', 'offer_expired', 'order_creation_already_attempted']);
+// The amount we'd pay no longer matches what the airline charges.
+const PRICE_CHANGED_CODES = new Set(['price_changed', 'payment_amount_does_not_match_order_amount']);
 
 /** Map an HTTP error response from Duffel to our SupplierError. */
 export function fromDuffelResponse(
@@ -41,6 +45,7 @@ export function fromDuffelThrown(err: unknown): SupplierError {
 function classify(status: number, errors: ApiResponseError[]): SupplierErrorCode {
   // Checked first: an expired offer may come back as 404/422, and "expired" is the more useful answer.
   if (errors.some((e) => EXPIRED_CODES.has(e.code))) return 'OFFER_EXPIRED';
+  if (errors.some((e) => PRICE_CHANGED_CODES.has(e.code))) return 'PRICE_CHANGED';
   if (status === 404 || errors.some((e) => e.code === 'not_found')) return 'OFFER_NOT_FOUND';
   if (status === 400 || status === 422 || errors.some((e) => e.type === 'validation_error')) {
     return 'INVALID_REQUEST';

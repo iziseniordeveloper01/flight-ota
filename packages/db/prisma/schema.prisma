@@ -75,4 +75,167 @@ model Airline {
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   @@map("airlines")
-}  
+}
+
+// ------------------------------------------------------------------------------------------------
+// Bookings (guest checkout). Transitions only via the API's transition() — see apps/api/AGENTS.md.
+
+enum BookingStatus {
+  DRAFT
+  PENDING_PAYMENT
+  CONFIRMING
+  CONFIRMED
+  FAILED
+  EXPIRED
+  CANCELLED
+}
+
+enum BookingActor {
+  SYSTEM
+  GUEST
+  ADMIN
+}
+
+// Not "PassengerType": that name is the domain type in @ota/suppliers.
+enum BookingPassengerType {
+  ADULT
+  CHILD
+  INFANT
+}
+
+enum PassengerTitle {
+  MR
+  MRS
+  MS
+  MISS
+}
+
+enum Gender {
+  M
+  F
+}
+
+enum IdentityDocumentType {
+  PASSPORT
+}
+
+enum AncillaryType {
+  BAG
+  SEAT
+  INSURANCE
+}
+
+// Money: Decimal(14,3) so 3-decimal currencies (KWD, BHD) fit; read back with currencyDigits().
+model Booking {
+  id                    String             @id @default(uuid(7)) @db.Uuid
+  // Public, customer-facing: 8 chars from an alphabet without 0/O/1/I
+  reference             String             @unique @db.Char(8)
+  status                BookingStatus      @default(DRAFT)
+  supplier              String             @db.VarChar(20)
+  supplierOfferId       String             @map("supplier_offer_id")
+  // Public offer exactly as shown to the customer at the last re-price
+  offerSnapshot         Json               @map("offer_snapshot")
+  // Supplier booking context — server-only, never returned
+  supplierRef           Json               @map("supplier_ref")
+  currency              String             @db.Char(3)
+  fareAmount            Decimal            @map("fare_amount") @db.Decimal(14, 3)
+  ancillariesAmount     Decimal            @default(0) @map("ancillaries_amount") @db.Decimal(14, 3)
+  insuranceAmount       Decimal            @default(0) @map("insurance_amount") @db.Decimal(14, 3)
+  totalAmount           Decimal            @map("total_amount") @db.Decimal(14, 3)
+  // Contact is filled by PUT details; null while the booking is a fresh draft
+  contactTitle          PassengerTitle?    @map("contact_title")
+  contactGivenName      String?            @map("contact_given_name")
+  contactFamilyName     String?            @map("contact_family_name")
+  contactEmail          String?            @map("contact_email")
+  contactPhone          String?            @map("contact_phone") // E.164
+  // sha256 (hex) of the guest token; the token itself is never stored
+  guestTokenHash        String             @map("guest_token_hash") @db.Char(64)
+  userId                String?            @map("user_id") @db.Uuid // future accounts
+  offerExpiresAt        DateTime           @map("offer_expires_at") @db.Timestamptz(3)
+  // Idempotency-Key of the confirm request that started CONFIRMING (one order attempt per booking)
+  confirmIdempotencyKey String?            @map("confirm_idempotency_key") @db.VarChar(100)
+  supplierOrderId       String?            @map("supplier_order_id")
+  pnr                   String?            @db.VarChar(16) // airline booking reference
+  insurancePolicyNumber String?            @map("insurance_policy_number")
+  confirmedAt           DateTime?          @map("confirmed_at") @db.Timestamptz(3)
+  // Machine code + safe message; the code lets a repeated confirm replay the same error
+  failureCode           String?            @map("failure_code") @db.VarChar(40)
+  failureReason         String?            @map("failure_reason")
+  createdAt             DateTime           @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt             DateTime           @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  passengers  BookingPassenger[]
+  ancillaries BookingAncillary[]
+  events      BookingEvent[]
+
+  // Manage-booking lookup (email + reference)
+  @@index([contactEmail, reference])
+  // Expiry sweeps / stuck-booking checks
+  @@index([status, offerExpiresAt])
+  @@map("bookings")
+}
+
+model BookingPassenger {
+  id                      String                @id @default(uuid(7)) @db.Uuid
+  bookingId               String                @map("booking_id") @db.Uuid
+  position                Int // order of the offer's passenger slots
+  type                    BookingPassengerType
+  title                   PassengerTitle
+  givenName               String                @map("given_name")
+  familyName              String?               @map("family_name") // null = mononym
+  gender                  Gender
+  // AES-256-GCM "v1:iv:tag:ct" (FieldEncryptionService)
+  dateOfBirthEnc          String                @map("date_of_birth_enc")
+  nationality             String                @db.Char(2)
+  documentType            IdentityDocumentType? @map("document_type")
+  documentNumberEnc       String?               @map("document_number_enc")
+  documentIssuingCountry  String?               @map("document_issuing_country") @db.Char(2)
+  documentExpiryDate      DateTime?             @map("document_expiry_date") @db.Date
+  infantAssociatedAdultId String?               @unique @map("infant_associated_adult_id") @db.Uuid
+  // OfferPassenger.ref of the slot (supplier passenger id)
+  supplierPassengerId     String                @map("supplier_passenger_id")
+
+  booking         Booking            @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  associatedAdult BookingPassenger?  @relation("InfantAdult", fields: [infantAssociatedAdultId], references: [id], onDelete: SetNull)
+  infant          BookingPassenger?  @relation("InfantAdult")
+  ancillaries     BookingAncillary[]
+
+  @@unique([bookingId, position])
+  @@map("booking_passengers")
+}
+
+model BookingAncillary {
+  id                String        @id @default(uuid(7)) @db.Uuid
+  bookingId         String        @map("booking_id") @db.Uuid
+  passengerId       String?       @map("passenger_id") @db.Uuid // null for whole-booking items (insurance)
+  type              AncillaryType
+  segmentRef        String?       @map("segment_ref") // seats: one segment
+  supplierServiceId String?       @map("supplier_service_id") // insurance: quote id
+  label             String
+  quantity          Int
+  amount            Decimal       @db.Decimal(14, 3) // line total (unit price × quantity)
+  currency          String        @db.Char(3)
+
+  booking   Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  passenger BookingPassenger? @relation(fields: [passengerId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId])
+  @@map("booking_ancillaries")
+}
+
+// Append-only audit trail: the API only ever inserts. Never put PII in message/data.
+model BookingEvent {
+  id         String         @id @default(uuid(7)) @db.Uuid
+  bookingId  String         @map("booking_id") @db.Uuid
+  fromStatus BookingStatus? @map("from_status")
+  toStatus   BookingStatus  @map("to_status")
+  actor      BookingActor
+  message    String
+  data       Json?
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([bookingId, createdAt])
+  @@map("booking_events")
+}

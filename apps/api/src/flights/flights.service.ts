@@ -1,18 +1,7 @@
 import { createHash } from 'node:crypto';
-import {
-  BadGatewayException,
-  BadRequestException,
-  GatewayTimeoutException,
-  GoneException,
-  HttpException,
-  Inject,
-  Injectable,
-  Logger,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { GoneException, Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
   compareMoney,
-  SupplierError,
   type FlightOffer,
   type PricedOffer,
   type SupplierAdapter,
@@ -20,6 +9,7 @@ import {
 } from '@ota/suppliers';
 import { JsonCacheService } from '../redis/json-cache.service.js';
 import type { SearchFlightsBody } from '@ota/contracts';
+import { callSupplier, GONE_MESSAGE } from './supplier-errors.js';
 import { SUPPLIER_ADAPTER } from './supplier.provider.js';
 
 // Prices are volatile: a short search TTL, and never longer than the offers stay valid.
@@ -27,8 +17,6 @@ import { SUPPLIER_ADAPTER } from './supplier.provider.js';
 const SEARCH_TTL_SECONDS = 10 * 60;
 const OFFER_MIN_TTL_SECONDS = 60;
 const SUPPLIER_TIMEOUT_MS = 30_000;
-
-const GONE_MESSAGE = 'This offer has expired or is no longer available. Please search again.';
 
 export interface SearchResult {
   offers: FlightOffer[];
@@ -135,34 +123,8 @@ export class FlightsService {
     return Math.min(SEARCH_TTL_SECONDS, earliest);
   }
 
-  private async callSupplier<T>(operation: string, call: () => Promise<T>): Promise<T> {
-    try {
-      return await call();
-    } catch (err) {
-      // Anything that is not a SupplierError is a bug in our code: let it surface as a 500.
-      if (!(err instanceof SupplierError)) throw err;
-      // Adapter messages carry only supplier error codes/titles — never tokens or passenger data.
-      const line = `${operation} failed supplier=${err.supplier} code=${err.code}: ${err.message}`;
-      const httpError = toHttpException(err);
-      if (httpError.getStatus() >= 500) this.logger.error(line);
-      else this.logger.warn(line);
-      throw httpError;
-    }
-  }
-}
-
-function toHttpException(err: SupplierError): HttpException {
-  switch (err.code) {
-    case 'INVALID_REQUEST':
-      return new BadRequestException('The flight supplier rejected this search');
-    case 'OFFER_NOT_FOUND':
-    case 'OFFER_EXPIRED':
-      return new GoneException(GONE_MESSAGE);
-    case 'TIMEOUT':
-      return new GatewayTimeoutException('The flight supplier did not respond in time. Please try again.');
-    case 'UNAVAILABLE':
-    case 'UPSTREAM_ERROR':
-      return new BadGatewayException('The flight supplier is unavailable. Please try again later.');
+  private callSupplier<T>(operation: string, call: () => Promise<T>): Promise<T> {
+    return callSupplier(this.logger, operation, call);
   }
 }
 

@@ -1,9 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { compareMoney, currencyDigits, fromMinor, moneyFromMinor, priceChange, toMinor } from './money.js';
+import {
+  compareMoney,
+  currencyDigits,
+  fromMinor,
+  moneyFromMinor,
+  multiplyMoney,
+  priceChange,
+  sumMoney,
+  toMinor,
+} from './money.js';
 
 const usd = (amount: string) => ({ amount, currency: 'USD' });
 
 describe('money', () => {
+  it('sums and multiplies exactly in the currency precision', () => {
+    expect(sumMoney([usd('0.10'), usd('0.20'), usd('10')], 'USD')).toEqual(usd('10.30'));
+    expect(sumMoney([], 'JPY')).toEqual({ amount: '0', currency: 'JPY' });
+    expect(() => sumMoney([usd('1.00'), { amount: '1.00', currency: 'EUR' }], 'USD')).toThrow(/mismatch/);
+    expect(() => sumMoney([usd('1.005')], 'USD')).toThrow(/decimals/);
+    expect(multiplyMoney(usd('19.99'), 3)).toEqual(usd('59.97'));
+    expect(multiplyMoney({ amount: '1.250', currency: 'KWD' }, 2)).toEqual({ amount: '2.500', currency: 'KWD' });
+    expect(() => multiplyMoney(usd('1.00'), 1.5)).toThrow();
+  });
+
   it('knows minor units per currency', () => {
     expect(currencyDigits('USD')).toBe(2);
     expect(currencyDigits('JPY')).toBe(0);

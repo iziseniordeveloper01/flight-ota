@@ -22,6 +22,7 @@ function slice({
 }: SliceSpec): Slice {
   const points = [from, ...via, to];
   const segments: Segment[] = points.slice(0, -1).map((origin, i) => ({
+    ref: `${from}-${to}-${i}`,
     marketingCarrier: { code: 'M1', name: 'Mock Air One' },
     operatingCarrier: operatedBy,
     flightNumber: String(100 + i),
@@ -56,6 +57,7 @@ export function offer(
     price: { total: { amount: opts.amount ?? '100.00', currency: opts.currency ?? 'USD' } },
     owner: { code: owner, name: `Airline ${owner}` },
     slices: (opts.slices ?? [{}]).map(slice),
+    passengers: [{ ref: 'p1', type: 'adult' }],
     refundable: opts.refundable ?? null,
     changeable: null,
     requiresInstantPayment: false,

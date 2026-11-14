@@ -1,17 +1,35 @@
 import type { SupplierAdapter } from '../adapter.js';
 import { SupplierError } from '../errors.js';
 import { addMinutesLocal } from '../local-time.js';
-import { currencyDigits, moneyFromMinor, priceChange } from '../money.js';
+import {
+  compareMoney,
+  currencyDigits,
+  moneyFromMinor,
+  multiplyMoney,
+  priceChange,
+  sumMoney,
+  toMinor,
+} from '../money.js';
 import type {
+  Ancillaries,
   BaggageAllowance,
+  BagOption,
   CabinClass,
   CallOptions,
   Carrier,
+  CreateOrderInput,
   FlightOffer,
+  Money,
+  OfferPassenger,
+  OrderLookup,
+  OrderResult,
   PassengerPrice,
   PriceOptions,
   PricedOffer,
   SearchRequest,
+  SeatMap,
+  SeatMapElement,
+  SeatMapRow,
   Segment,
   Slice,
 } from '../types.js';
@@ -20,6 +38,8 @@ import type {
 // (only expiresAt moves with the clock). No network, no Math.random.
 // Stateless: each supplierOfferId encodes the search request + offer index, so price() regenerates
 // the offer on any instance — searches cached in Redis stay selectable across API restarts.
+// Bags, seats and orders are derived from the offer id too; service ids are deterministic strings
+// and createOrder() regenerates the catalogue to look them up (no stored state).
 
 const OFFER_TTL_MS = 20 * 60_000;
 const OFFERS_PER_SEARCH = 10;
@@ -29,6 +49,27 @@ const NO_OFFERS_ROUTE = 'PVD-RAI';
 const TIMEOUT_ROUTE = 'STN-LHR';
 const PRICE_CHANGE_ROUTE = 'LHR-STN';
 const PRICE_CHANGE_PCT = 12n;
+// Late-booking route: once departure is ≤ LATE_DAYS away (by the mock clock), price() adds
+// LATE_PCT to the fare and the 23kg bag sells out. Tests move the injected clock to trigger it.
+const LATE_ROUTE = 'LGW-LHR';
+const LATE_DAYS = 14;
+const LATE_PCT = 10n;
+
+// Order scenarios by passenger family name (upper-cased). TIMEOUT applies to the LEAD passenger:
+// createOrder() times out but the order "exists", so retrieveOrder() finds it by lookup.
+const FAIL_NAME = 'FAIL';
+const PRICE_CHANGE_NAME = 'PRICECHANGE';
+const TIMEOUT_NAME = 'TIMEOUT';
+
+// Ancillary prices in cents (rescaled to the currency's minor unit like fares).
+const BAGS = [
+  { kg: 15, cents: 2_000n, max: 2 },
+  { kg: 23, cents: 3_500n, max: 2 },
+] as const;
+const SEAT_ROWS = 30;
+const SEAT_LETTERS = [['A', 'B', 'C'], ['D', 'E', 'F']];
+const EXIT_ROWS = new Set([12, 13]);
+const PNR_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
 interface MockFare {
   carrier: Carrier;
@@ -150,6 +191,7 @@ export class MockSupplier implements SupplierAdapter {
       // Scenario: the airline raised the fare since search (surcharge lands in taxes).
       unitTaxCents += (unitBaseCents * PRICE_CHANGE_PCT) / 100n;
     }
+    if (this.isLate(req)) unitTaxCents += (unitBaseCents * LATE_PCT) / 100n;
     const latest: FlightOffer = { ...offer, price: buildPrice(req, unitBaseCents, unitTaxCents) };
     try {
       return { ...latest, ...priceChange(opts.previousTotal ?? offer.price.total, latest.price.total) };
@@ -157,6 +199,154 @@ export class MockSupplier implements SupplierAdapter {
       // Currency differs from previousTotal: not comparable. Same code as DuffelAdapter.
       throw new SupplierError('UPSTREAM_ERROR', this.name, (err as Error).message, { cause: err });
     }
+  }
+
+  async getAncillaries(supplierOfferId: string, opts: CallOptions = {}): Promise<Ancillaries> {
+    const offer = await this.price(supplierOfferId, opts);
+    return {
+      bags: this.bags(offer),
+      seatsAvailable: true,
+      // Like TBO, the mock doesn't say whether documents are needed: the caller decides.
+      passengerRequirements: { identityDocumentRequired: null, maxNameLength: null },
+    };
+  }
+
+  async getSeatMaps(supplierOfferId: string, opts: CallOptions = {}): Promise<SeatMap[]> {
+    const offer = await this.price(supplierOfferId, opts);
+    return offer.slices.flatMap((s) => s.segments).map((seg) => this.seatMap(offer, seg.ref));
+  }
+
+  async createOrder(input: CreateOrderInput, opts: CallOptions = {}): Promise<OrderResult> {
+    const offer = await this.price(input.supplierOfferId, opts);
+
+    const slots = new Map(offer.passengers.map((p) => [p.ref, p.type]));
+    const refs = new Set(input.passengers.map((p) => p.ref));
+    if (refs.size !== slots.size || input.passengers.some((p) => slots.get(p.ref) !== p.type)) {
+      throw new SupplierError('INVALID_REQUEST', this.name, 'Passengers do not match the offer');
+    }
+    const names = input.passengers.map((p) => (p.familyName ?? '').toUpperCase());
+    if (names.includes(FAIL_NAME)) {
+      throw new SupplierError('UPSTREAM_ERROR', this.name, 'Mock airline rejected the order (scenario)');
+    }
+    if (names[0] === TIMEOUT_NAME) {
+      throw new SupplierError('TIMEOUT', this.name, 'Mock order timed out (scenario; the order exists)');
+    }
+
+    const catalogue = this.serviceCatalogue(offer);
+    const lines: Money[] = [offer.price.total];
+    for (const { serviceId, quantity } of input.services) {
+      const service = catalogue.get(serviceId);
+      if (!service || quantity < 1 || quantity > service.max) {
+        throw new SupplierError('INVALID_REQUEST', this.name, 'Unknown or unavailable service');
+      }
+      lines.push(multiplyMoney(service.price, quantity));
+    }
+    const currency = offer.price.total.currency;
+    let total = sumMoney(lines, currency);
+    if (names.includes(PRICE_CHANGE_NAME)) {
+      const minor = toMinor(total.amount, currencyDigits(currency));
+      total = moneyFromMinor(minor + (minor * PRICE_CHANGE_PCT) / 100n, currency);
+    }
+    if (input.expectedTotal.currency !== currency || compareMoney(total, input.expectedTotal) !== 0) {
+      throw new SupplierError('PRICE_CHANGED', this.name, 'Order total differs from the expected total', {
+        newTotal: total,
+      });
+    }
+    return orderResult(input.idempotencyKey, total);
+  }
+
+  async retrieveOrder(lookup: OrderLookup, opts: CallOptions = {}): Promise<OrderResult | null> {
+    this.throwIfAborted(opts);
+    if (lookup.supplierOrderId) return decodeOrderId(lookup.supplierOrderId);
+    // Only the TIMEOUT scenario leaves an order we didn't get a response for.
+    return lookup.leadPassenger.familyName?.toUpperCase() === TIMEOUT_NAME
+      ? orderResult(lookup.idempotencyKey, lookup.expectedTotal)
+      : null;
+  }
+
+  private isLate(req: SearchRequest): boolean {
+    if (`${req.origin}-${req.destination}` !== LATE_ROUTE) return false;
+    const today = new Date(this.now()).toISOString().slice(0, 10);
+    return (Date.parse(`${req.departureDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000 <= LATE_DAYS;
+  }
+
+  // 15kg + 23kg per seated passenger per slice; infants get no bag allowance to buy.
+  private bags(offer: FlightOffer): BagOption[] {
+    const currency = offer.price.total.currency;
+    const key = offerKey(offer.supplierOfferId);
+    const late = this.isLate(decodeOfferId(offer.supplierOfferId)!.req);
+    return offer.passengers
+      .filter((p) => p.type !== 'infant')
+      .flatMap((p) =>
+        offer.slices.flatMap((slice, sliceIdx) =>
+          BAGS.filter((b) => !(late && b.kg === 23)).map(
+            (b): BagOption => ({
+              serviceId: `bag:${key}:${p.ref}:${sliceIdx}:${b.kg}`,
+              passengerRef: p.ref,
+              segmentRefs: slice.segments.map((s) => s.ref),
+              label: `${b.kg}kg checked bag`,
+              weightKg: b.kg,
+              maxQuantity: b.max,
+              price: moneyFromMinor(scaleCents(b.cents, currency), currency),
+            }),
+          ),
+        ),
+      );
+  }
+
+  // Rows 1–30, ABC|DEF. Rows 1–4 extra legroom and 12–13 exit rows are paid (exit rows adults
+  // only), 5–11 cheap, 14+ free; ~20% of seats taken (hash-based, so stable per offer+segment).
+  private seatMap(offer: FlightOffer, segmentRef: string): SeatMap {
+    const currency = offer.price.total.currency;
+    const key = offerKey(offer.supplierOfferId);
+    const seated = offer.passengers.filter((p) => p.type !== 'infant');
+    const rows: SeatMapRow[] = [
+      { number: null, sections: [{ elements: [{ type: 'facility', kind: 'galley' }] }, { elements: [{ type: 'facility', kind: 'lavatory' }] }] },
+    ];
+    for (let row = 1; row <= SEAT_ROWS; row++) {
+      if (row === Math.min(...EXIT_ROWS)) {
+        rows.push({ number: null, sections: SEAT_LETTERS.map(() => ({ elements: [{ type: 'exit' }] })) });
+      }
+      const exit = EXIT_ROWS.has(row);
+      const [name, cents] = row <= 4 ? ['Extra legroom', 2_500n] : exit ? ['Exit row', 3_000n] : row <= 11 ? ['Standard', 800n] : ['Standard', 0n];
+      const price = moneyFromMinor(scaleCents(cents, currency), currency);
+      rows.push({
+        number: row,
+        sections: SEAT_LETTERS.map((letters) => ({
+          elements: letters.map((letter): SeatMapElement => {
+            const designator = `${row}${letter}`;
+            const taken = hash(`${key}|${segmentRef}|${designator}`) % 5 === 0;
+            const eligible = exit ? seated.filter((p) => p.type === 'adult') : seated;
+            const services = taken
+              ? []
+              : eligible.map((p) => ({ passengerRef: p.ref, serviceId: `seat:${key}:${segmentRef}:${designator}:${p.ref}`, price }));
+            return {
+              type: 'seat',
+              designator,
+              available: services.length > 0,
+              name,
+              ...(exit ? { disclosures: ['Passengers in exit rows must be adults able to assist in an evacuation.'] } : {}),
+              services,
+            };
+          }),
+        })),
+      });
+    }
+    return { segmentRef, cabins: [{ deck: 0, rows }] };
+  }
+
+  private serviceCatalogue(offer: FlightOffer): Map<string, { price: Money; max: number }> {
+    const catalogue = new Map<string, { price: Money; max: number }>();
+    for (const bag of this.bags(offer)) catalogue.set(bag.serviceId, { price: bag.price, max: bag.maxQuantity });
+    for (const seg of offer.slices.flatMap((s) => s.segments)) {
+      for (const row of this.seatMap(offer, seg.ref).cabins[0].rows) {
+        for (const el of row.sections.flatMap((s) => s.elements)) {
+          if (el.type !== 'seat') continue;
+          for (const svc of el.services) catalogue.set(svc.serviceId, { price: svc.price, max: 1 });
+        }
+      }
+    }
+    return catalogue;
   }
 
   // All offers for a request, in a fixed order (the PRNG is sequential, so offer i depends on 0..i-1).
@@ -178,11 +368,11 @@ export class MockSupplier implements SupplierAdapter {
       const stops = i % 2; // alternate direct / 1-stop
       const slices = [
         this.buildSlice(rand, fare.carrier, req.origin, req.destination, req.departureDate,
-          outboundMinutes, stops, req.cabin),
+          outboundMinutes, stops, req.cabin, 0),
       ];
       if (req.returnDate) {
         slices.push(this.buildSlice(rand, fare.carrier, req.destination, req.origin,
-          req.returnDate, returnMinutes, stops, req.cabin));
+          req.returnDate, returnMinutes, stops, req.cabin, 1));
       }
 
       // Longer trips cost more; connections are 15% cheaper than direct.
@@ -200,6 +390,7 @@ export class MockSupplier implements SupplierAdapter {
         price: buildPrice(req, unitBaseCents, unitTaxCents),
         owner: fare.carrier,
         slices,
+        passengers: passengerSlots(req),
         baggage: fare.baggage,
         fareBrand: fare.fareBrand,
         refundable: fare.refundable,
@@ -221,12 +412,15 @@ export class MockSupplier implements SupplierAdapter {
     directMinutes: number,
     stops: number,
     cabin: CabinClass,
+    sliceIdx: number,
   ): Slice {
     // Departures between 06:00 and 21:55, on 5-minute marks.
     const depMinuteOfDay = 6 * 60 + rand(16 * 12) * 5;
     const departureAt = addMinutesLocal(`${date}T00:00:00`, depMinuteOfDay);
+    let segIdx = 0;
     // Mock simplification: all airports share one clock, so arrival = departure + flight time.
     const segment = (from: string, to: string, at: string, minutes: number): Segment => ({
+      ref: `s${sliceIdx}-${segIdx++}`,
       marketingCarrier: carrier,
       operatingCarrier: carrier,
       flightNumber: String(100 + rand(900)),
@@ -351,6 +545,50 @@ function decodeOfferId(id: string): { req: SearchRequest; idx: number } | null {
   };
 }
 
+// p1…pN in search order: adults, children, infants (the order every supplier returns them in).
+function passengerSlots(req: SearchRequest): OfferPassenger[] {
+  const types = [
+    ...Array<OfferPassenger['type']>(req.adults).fill('adult'),
+    ...Array<OfferPassenger['type']>(req.children).fill('child'),
+    ...Array<OfferPassenger['type']>(req.infants).fill('infant'),
+  ];
+  return types.map((type, i) => ({ ref: `p${i + 1}`, type }));
+}
+
+// Short stable key of an offer, embedded in its service ids so they can't be used on another offer.
+function offerKey(supplierOfferId: string): string {
+  return hash(supplierOfferId).toString(36);
+}
+
+// Mock prices are authored in cents; rescale to the currency's real minor unit (JPY 0, KWD 3).
+function scaleCents(cents: bigint, currency: string): bigint {
+  return (cents * 10n ** BigInt(currencyDigits(currency))) / 100n;
+}
+
+// Stateless order id: everything retrieveOrder() returns is encoded in it.
+function orderResult(idempotencyKey: string, total: Money): OrderResult {
+  let pnr = '';
+  for (let i = 0; i < 6; i++) pnr += PNR_ALPHABET[hash(`${idempotencyKey}:${i}`) % PNR_ALPHABET.length];
+  const payload = { k: idempotencyKey, a: total.amount, c: total.currency };
+  return {
+    supplierOrderId: `mko_${Buffer.from(JSON.stringify(payload)).toString('base64url')}`,
+    pnr,
+    status: 'confirmed',
+    total,
+  };
+}
+
+function decodeOrderId(id: string): OrderResult | null {
+  if (!id.startsWith('mko_')) return null;
+  try {
+    const { k, a, c } = JSON.parse(Buffer.from(id.slice(4), 'base64url').toString('utf8')) as Record<string, unknown>;
+    if (typeof k !== 'string' || typeof a !== 'string' || typeof c !== 'string') return null;
+    return orderResult(k, { amount: a, currency: c });
+  } catch {
+    return null;
+  }
+}
+
 // Only valid for two local times at the same (mock) airport clock.
 function minutesBetween(a: string, b: string): number {
   return (Date.parse(`${b}Z`) - Date.parse(`${a}Z`)) / 60_000;
@@ -358,10 +596,8 @@ function minutesBetween(a: string, b: string): number {
 
 function buildPrice(req: SearchRequest, unitBaseCents: bigint, unitTaxCents: bigint): FlightOffer['price'] {
   const currency = req.currency ?? 'USD';
-  // Prices are generated in cents; rescale to the currency's real minor unit (JPY 0, KWD 3).
-  const scale = (cents: bigint) => (cents * 10n ** BigInt(currencyDigits(currency))) / 100n;
-  const unitBase = scale(unitBaseCents);
-  const unitTax = scale(unitTaxCents);
+  const unitBase = scaleCents(unitBaseCents, currency);
+  const unitTax = scaleCents(unitTaxCents, currency);
 
   const rows: Array<{ type: PassengerPrice['type']; count: number; pct: bigint }> = [
     { type: 'adult', count: req.adults, pct: 100n },

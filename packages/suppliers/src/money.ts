@@ -63,6 +63,24 @@ export function compareMoney(a: Money, b: Money): -1 | 0 | 1 {
   return x < y ? -1 : x > y ? 1 : 0;
 }
 
+/** Sum in `currency` at its own precision. Throws on a currency mismatch or excess precision. */
+export function sumMoney(items: Money[], currency: string): Money {
+  const digits = currencyDigits(currency);
+  let total = 0n;
+  for (const item of items) {
+    if (item.currency !== currency) throw new Error(`Currency mismatch: ${item.currency} vs ${currency}`);
+    total += toMinor(item.amount, digits);
+  }
+  return { amount: fromMinor(total, digits), currency };
+}
+
+/** `unit` × an integer quantity. */
+export function multiplyMoney(unit: Money, quantity: number): Money {
+  if (!Number.isInteger(quantity)) throw new Error(`Quantity must be an integer: ${quantity}`);
+  const digits = currencyDigits(unit.currency);
+  return { amount: fromMinor(toMinor(unit.amount, digits) * BigInt(quantity), digits), currency: unit.currency };
+}
+
 /**
  * Re-pricing result. No previous total → unchanged. Throws if currencies differ: a currency
  * switch between search and re-price must surface as an error, never as "same price".

@@ -85,6 +85,7 @@ describe('DuffelAdapter.search', () => {
           stops: 0,
           segments: [
             {
+              ref: 'seg_1',
               marketingCarrier: ZZ_CARRIER,
               operatingCarrier: ZZ_CARRIER,
               flightNumber: '0117',
@@ -101,6 +102,7 @@ describe('DuffelAdapter.search', () => {
           ],
         },
       ],
+      passengers: [{ ref: 'pas_0000AUde3KY1SptM6ABSfU', type: 'adult' }],
       baggage: { checkedPieces: 1, cabinPieces: 1 },
       fareBrand: 'Basic',
       refundable: false,
@@ -190,6 +192,9 @@ describe('DuffelAdapter error mapping', () => {
     [422, 'validation_error', 'invalid_field', 'INVALID_REQUEST'],
     [400, 'invalid_request_error', 'bad_request', 'INVALID_REQUEST'],
     [422, 'invalid_state_error', 'offer_no_longer_available', 'OFFER_EXPIRED'],
+    [422, 'invalid_state_error', 'order_creation_already_attempted', 'OFFER_EXPIRED'],
+    [422, 'airline_error', 'price_changed', 'PRICE_CHANGED'],
+    [422, 'validation_error', 'payment_amount_does_not_match_order_amount', 'PRICE_CHANGED'],
     [404, 'invalid_request_error', 'not_found', 'OFFER_NOT_FOUND'],
     [500, 'api_error', 'internal_server_error', 'UNAVAILABLE'],
     [503, 'api_error', 'service_unavailable', 'UNAVAILABLE'],

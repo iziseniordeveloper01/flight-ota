@@ -29,6 +29,16 @@ Turborepo + pnpm 10 workspaces, Node 24, ESM everywhere. Package-specific rules 
   Never pass them to `new Date(str)` / `toLocaleString` with a timezone (it shifts them): read the parts
   (web: `apps/web/src/lib/local-time.ts`).
 - `FlightOffer.supplierRef` is server-only booking context; strip it (`toPublicOffer`) before any response.
+- `FlightOffer.passengers[].ref` / `Segment.ref` are opaque supplier ids, safe to return: bags, seats and
+  orders refer to passengers and flights by them.
+
+## Bookings (guest checkout) — details in `apps/api/AGENTS.md`
+- State machine: DRAFT → PENDING_PAYMENT → CONFIRMING → CONFIRMED (→ CANCELLED later); CONFIRMING → FAILED;
+  DRAFT/PENDING_PAYMENT → EXPIRED. Status changes ONLY via `BookingStore.transition()`.
+- Passenger PII (DOB, passport number) is AES-256-GCM encrypted with `BOOKING_DATA_KEY`; document numbers
+  never leave the API unmasked. Never log names, DOBs, documents, emails or phones.
+- Guests manage a booking with the `X-Booking-Token` returned once at creation (only its sha256 is stored).
+- `POST /bookings/:id/confirm-demo` is dev/test only (404 in production); real payments are Step 8.
 
 ## Contracts
 - Request schemas and public types live in `@ota/contracts`; api and web both import from there. Never

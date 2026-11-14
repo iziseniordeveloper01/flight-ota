@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SupplierError } from '../errors.js';
-import { toMinor } from '../money.js';
-import type { FlightOffer, SearchRequest } from '../types.js';
+import { compareMoney, sumMoney, toMinor } from '../money.js';
+import type { CreateOrderInput, FlightOffer, OrderLookup, SearchRequest } from '../types.js';
 import { MockSupplier } from './mock.supplier.js';
 
 const NOW = Date.parse('2026-11-14T12:00:00Z');
@@ -170,3 +170,126 @@ describe('MockSupplier', () => {
     expect(await codeOf(supplier.price(offer.supplierOfferId))).toBe('OFFER_EXPIRED');
   });
 });
+
+describe('MockSupplier booking', () => {
+  const supplier = new MockSupplier({ now: () => NOW });
+  const roundTrip = { ...base, returnDate: '2026-12-27' }; // 2 adults, 1 child, 1 infant
+
+  async function firstOffer(req: SearchRequest = roundTrip) {
+    return (await supplier.search(req))[0];
+  }
+
+  function orderInput(offer: FlightOffer, services: CreateOrderInput['services'], familyName = 'Doe'): CreateOrderInput {
+    return {
+      supplierOfferId: offer.supplierOfferId,
+      supplierRef: offer.supplierRef,
+      passengers: offer.passengers.map((p, i) => ({
+        ref: p.ref, type: p.type, title: 'mr', gender: 'm', givenName: 'Jo', familyName: i === 0 ? familyName : 'Doe',
+        dateOfBirth: '1990-01-01', nationality: 'GB',
+        ...(p.type === 'infant' ? { associatedAdultRef: 'p1' } : {}),
+      })),
+      contact: { email: 'a@example.com', phone: '+441234567890' },
+      services,
+      expectedTotal: offer.price.total,
+      idempotencyKey: 'booking-1',
+    };
+  }
+
+  it('offers carry passenger slots and segment refs in search order', async () => {
+    const offer = await firstOffer();
+    expect(offer.passengers).toEqual([
+      { ref: 'p1', type: 'adult' }, { ref: 'p2', type: 'adult' }, { ref: 'p3', type: 'child' }, { ref: 'p4', type: 'infant' },
+    ]);
+    expect(offer.slices[0].segments[0].ref).toBe('s0-0');
+    expect(offer.slices[1].segments[0].ref).toBe('s1-0');
+  });
+
+  it('bags: 15kg + 23kg per seated passenger per slice, none for infants', async () => {
+    const offer = await firstOffer();
+    const { bags, seatsAvailable, passengerRequirements } = await supplier.getAncillaries(offer.supplierOfferId);
+    expect(bags).toHaveLength(3 * 2 * 2);
+    expect(bags.some((b) => b.passengerRef === 'p4')).toBe(false);
+    expect(bags[0]).toMatchObject({ label: '15kg checked bag', weightKg: 15, maxQuantity: 2, price: { amount: '20.00', currency: 'USD' } });
+    expect(bags[0].segmentRefs).toEqual(offer.slices[0].segments.map((s) => s.ref));
+    expect(seatsAvailable).toBe(true);
+    expect(passengerRequirements).toEqual({ identityDocumentRequired: null, maxNameLength: null });
+    expect(await supplier.getAncillaries(offer.supplierOfferId)).toEqual({ bags, seatsAvailable, passengerRequirements });
+  });
+
+  it('seat map: one per segment, rows 1–30 ABC|DEF, some taken, exit rows adults only, paid and free', async () => {
+    const offer = await firstOffer();
+    const maps = await supplier.getSeatMaps(offer.supplierOfferId);
+    expect(maps.map((m) => m.segmentRef)).toEqual(offer.slices.flatMap((s) => s.segments.map((x) => x.ref)));
+    const rows = maps[0].cabins[0].rows;
+    expect(rows.filter((r) => r.number !== null).map((r) => r.number)).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+    const seats = rows.flatMap((r) => r.sections.flatMap((s) => s.elements)).filter((e) => e.type === 'seat');
+    expect(seats).toHaveLength(180);
+    expect(seats.some((s) => !s.available)).toBe(true);
+    const exit = seats.find((s) => s.designator.startsWith('12') && s.available)!;
+    expect(exit.services.map((s) => s.passengerRef)).toEqual(['p1', 'p2']);
+    expect(seats.find((s) => s.designator.startsWith('1') && s.designator.length === 2 && s.available)!.services[0].price.amount).toBe('25.00');
+    expect(seats.find((s) => s.designator.startsWith('20') && s.available)!.services[0].price.amount).toBe('0.00');
+    expect(rows.some((r) => r.sections.some((s) => s.elements[0].type === 'exit'))).toBe(true);
+  });
+
+  it('createOrder: total = fare + services; deterministic PNR; retrieveOrder by id', async () => {
+    const offer = await firstOffer();
+    const { bags } = await supplier.getAncillaries(offer.supplierOfferId);
+    const input = orderInput(offer, [{ serviceId: bags[1].serviceId, quantity: 2 }]);
+    input.expectedTotal = sumMoney([offer.price.total, { amount: '70.00', currency: 'USD' }], 'USD');
+    const result = await supplier.createOrder(input);
+    expect(result.status).toBe('confirmed');
+    expect(result.pnr).toMatch(/^[2-9A-HJ-NP-Z]{6}$/);
+    expect(result.total).toEqual(input.expectedTotal);
+    expect(await supplier.createOrder(input)).toEqual(result);
+    expect(await supplier.retrieveOrder({ ...lookupOf(input), supplierOrderId: result.supplierOrderId })).toEqual(result);
+    expect(await supplier.retrieveOrder(lookupOf(input))).toBeNull(); // no timeout happened
+  });
+
+  it('createOrder: expected total off → PRICE_CHANGED with newTotal; unknown service → INVALID_REQUEST', async () => {
+    const offer = await firstOffer();
+    const wrong = { ...orderInput(offer, []), expectedTotal: { amount: '1.00', currency: 'USD' } };
+    const err = await supplier.createOrder(wrong).catch((e: SupplierError) => e);
+    expect(err).toMatchObject({ code: 'PRICE_CHANGED', newTotal: offer.price.total });
+    expect(await codeOf(supplier.createOrder(orderInput(offer, [{ serviceId: 'bag:nope', quantity: 1 }])))).toBe('INVALID_REQUEST');
+    const tooMany = orderInput(offer, [{ serviceId: (await supplier.getAncillaries(offer.supplierOfferId)).bags[0].serviceId, quantity: 3 }]);
+    expect(await codeOf(supplier.createOrder(tooMany))).toBe('INVALID_REQUEST');
+  });
+
+  it('family-name scenarios: FAIL, PRICECHANGE, TIMEOUT (order recoverable by lookup)', async () => {
+    const offer = await firstOffer();
+    expect(await codeOf(supplier.createOrder(orderInput(offer, [], 'fail')))).toBe('UPSTREAM_ERROR');
+    const changed = await supplier.createOrder(orderInput(offer, [], 'PriceChange')).catch((e: SupplierError) => e);
+    expect(changed).toMatchObject({ code: 'PRICE_CHANGED' });
+    expect(compareMoney((changed as SupplierError).newTotal!, offer.price.total)).toBe(1);
+
+    const slow = orderInput(offer, [], 'TIMEOUT');
+    expect(await codeOf(supplier.createOrder(slow))).toBe('TIMEOUT');
+    const found = await supplier.retrieveOrder(lookupOf(slow));
+    expect(found).toMatchObject({ status: 'confirmed', total: slow.expectedTotal });
+  });
+
+  it('LGW→LHR late booking: within 14 days the fare rises 10% and the 23kg bag sells out', async () => {
+    let now = NOW;
+    const clocked = new MockSupplier({ now: () => now });
+    const [offer] = await clocked.search({ ...base, origin: 'LGW', destination: 'LHR' }); // departs 2026-12-20
+    const early = await clocked.getAncillaries(offer.supplierOfferId);
+    expect((await clocked.price(offer.supplierOfferId)).priceChanged).toBe(false);
+    now = Date.parse('2026-12-06T12:00:00Z');
+    const late = await clocked.price(offer.supplierOfferId);
+    expect(late.priceChanged).toBe(true);
+    expect(compareMoney(late.price.total, offer.price.total)).toBe(1);
+    const lateBags = (await clocked.getAncillaries(offer.supplierOfferId)).bags;
+    expect(lateBags.some((b) => b.weightKg === 23)).toBe(false);
+    expect(lateBags.length).toBe(early.bags.length / 2);
+  });
+});
+
+function lookupOf(input: CreateOrderInput): OrderLookup {
+  const lead = input.passengers[0];
+  return {
+    idempotencyKey: input.idempotencyKey,
+    leadPassenger: { givenName: lead.givenName, familyName: lead.familyName },
+    expectedTotal: input.expectedTotal,
+  };
+}

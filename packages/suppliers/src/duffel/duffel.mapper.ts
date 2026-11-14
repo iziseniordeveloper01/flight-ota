@@ -6,6 +6,7 @@ import type {
   Carrier,
   FlightOffer,
   Money,
+  PassengerType,
   SearchRequest,
   Segment,
   Slice,
@@ -15,6 +16,7 @@ import type {
   CreateOfferRequestPassenger,
   FlightsCondition,
   Offer,
+  OfferPassenger,
   OfferSlice,
   OfferSliceSegment,
 } from './duffel.types.js';
@@ -68,6 +70,7 @@ export function toFlightOffer(offer: DuffelOffer, fallbackCabin: CabinClass): Fl
     },
     owner: carrier(offer.owner),
     slices: offer.slices.map((s) => toSlice(s, fallbackCabin)),
+    passengers: offer.passengers.map((p) => ({ ref: p.id, type: passengerType(p) })),
     baggage: baggage(offer),
     fareBrand: offer.slices[0]?.fare_brand_name ?? undefined,
     refundable: allowed(offer.conditions?.refund_before_departure),
@@ -102,6 +105,7 @@ function toSlice(slice: OfferSlice, fallbackCabin: CabinClass): Slice {
 
 function toSegment(segment: OfferSliceSegment, fallbackCabin: CabinClass): Segment {
   return {
+    ref: segment.id,
     marketingCarrier: carrier(segment.marketing_carrier),
     operatingCarrier: carrier(segment.operating_carrier),
     flightNumber: segment.marketing_carrier_flight_number,
@@ -120,7 +124,15 @@ function toSegment(segment: OfferSliceSegment, fallbackCabin: CabinClass): Segme
   };
 }
 
-function carrier(airline: { iata_code: string | null; name: string; logo_symbol_url: string | null }): Carrier {
+// We search under-18s by age, so Duffel echoes `age` (on the final slice's departure date — the
+// same day our age rules use); `type` is only reliable for passengers sent as type 'adult'.
+function passengerType(p: Pick<OfferPassenger, 'type' | 'age'>): PassengerType {
+  if (p.age != null) return p.age < 2 ? 'infant' : p.age < 12 ? 'child' : 'adult';
+  if (p.type === 'infant_without_seat') return 'infant';
+  return p.type === 'child' ? 'child' : 'adult';
+}
+
+function carrier(airline:{ iata_code: string | null; name: string; logo_symbol_url: string | null }): Carrier {
   // The symbol (square mark) suits small inline sizes better than logo_lockup_url (mark + wordmark).
   return { code: airline.iata_code ?? '', name: airline.name, logoUrl: airline.logo_symbol_url ?? undefined };
 }

@@ -42,6 +42,58 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
   - SupplierError → HTTP: INVALID_REQUEST 400, OFFER_NOT_FOUND/OFFER_EXPIRED 410, TIMEOUT 504,
     UNAVAILABLE/UPSTREAM_ERROR 502. Responses are `Cache-Control: no-store`.
   - e2e overrides `SUPPLIER_ADAPTER` with `MockSupplier` (independent of .env).
+  - Supplier error → HTTP mapping is shared: `flights/supplier-errors.ts` (`callSupplier`). Exports the
+    adapter + `FlightsService` for bookings.
+- `insurance/` `INSURANCE_PROVIDER` token (`InsuranceProvider`: quote / bind). `INSURANCE_PROVIDER=demo` →
+  `DemoInsuranceProvider` ("Travel Protection (Demo)", 3% of fare per passenger, min 5.00, policy `DEMO-<ref>`,
+  `demo: true`). Opt-in only; price always recomputed server-side.
+- `common/crypto/` `FieldEncryptionService`: AES-256-GCM, `v1:<iv>:<tag>:<ct>`, key `BOOKING_DATA_KEY`
+  (base64, 32 bytes, required). The version prefix allows key rotation.
+- `bookings/` guest checkout (all `/v1/bookings…`, `Cache-Control: no-store`, schemas from `@ota/contracts`):
+  - `POST /bookings {offerId}` → re-prices (FlightsService.getOffer, 410 if gone) → DRAFT; returns the guest
+    token ONCE (`meta.guestToken`) + `priceChanged`. Everything else needs header `X-Booking-Token`.
+  - `GET /bookings/:id` (lazy expiry; CONFIRMING → `retrieveOrder` recovery, throttled 10s via Redis),
+    `GET …/ancillaries`, `GET …/seat-maps` (Redis `bookings:{ancillaries,seat-maps}:v1:<id>`, TTL = offer expiry),
+    `PUT …/details` (DRAFT only; replaces passengers + add-ons; 422 business rules; returns `meta.warnings`),
+    `POST …/checkout` (fresh re-price of fare + add-ons + insurance, bypassing cache: total changed → stays
+    DRAFT, amounts/snapshot updated, 422 PRICE_CHANGED {previousTotal,newTotal} — calling again accepts;
+    add-on gone → 422 SERVICE_UNAVAILABLE {serviceIds}; else → PENDING_PAYMENT),
+    `POST …/confirm-demo` (header `Idempotency-Key`; **dev/test only, 404 when NODE_ENV=production**).
+  - Errors: 400 schema, 404 not found / bad token, 409 ILLEGAL_STATE / IDEMPOTENCY_CONFLICT, 410 expired,
+    422 `{ code, message, issues? }` (AGE_CATEGORY_MISMATCH, NAME_TOO_LONG, DOCUMENT_REQUIRED, PRICE_CHANGED…),
+    502/504 supplier. Codes: `BookingErrorCode` in contracts.
+
+## Booking rules (apps/api/src/bookings)
+- **State machine** (`booking-state.ts`): DRAFT→PENDING_PAYMENT|EXPIRED, PENDING_PAYMENT→CONFIRMING|EXPIRED,
+  CONFIRMING→CONFIRMED|FAILED, CONFIRMED→CANCELLED. Change status ONLY via `BookingStore.transition()`
+  (SELECT … FOR UPDATE + BookingEvent in one transaction). Writers of a booking lock the row first.
+  `BookingEvent` is append-only and never contains PII.
+- **Lazy expiry**: DRAFT/PENDING_PAYMENT read after `offerExpiresAt` → EXPIRED. CONFIRMING never expires.
+- **Guest token**: 32 random bytes (base64url), only the sha256 is stored, compared with `timingSafeEqual`.
+  Unknown id, malformed id, missing or wrong token → the same 404.
+- **Encryption**: DOB and passport number are encrypted (`FieldEncryptionService`); responses show the
+  document as `*****123` only. Responses are built by `toPublicBooking()` (allow-list: never supplierRef,
+  supplierOfferId, supplierOrderId, token hash).
+- **Prices**: fare from the supplier re-price; bags/seats from the supplier catalogue (client sends service ids
+  + quantities only); insurance from the provider. Sums via `bookingTotals()` (decimal strings, Decimal(14,3) in DB).
+- **Confirm**: one order attempt per booking — the PENDING_PAYMENT→CONFIRMING transition stores the
+  Idempotency-Key; same key replays the stored result (FAILED replays from `failureCode` + event data),
+  another key → 409. createOrder runs with a 130s timeout and WITHOUT the request's abort signal. Supplier
+  TIMEOUT → stay CONFIRMING, 202; GET settles via `retrieveOrder` (never re-create). The supplier
+  idempotency key is the booking id.
+- **Stuck bookings**: CONFIRMING > 15 min → WARN (id + reference) on GET and in a 5-min sweep
+  (`StuckBookingsMonitor`, Redis lock `bookings:lock:stuck-check` so one instance sweeps).
+- e2e (`test/bookings.e2e-spec.ts`) uses `MockSupplier({ now })` with a movable clock; scenarios are listed in
+  `packages/suppliers/AGENTS.md`. Test bookings are deleted in afterAll.
+
+## Backlog
+- Rate limiting on booking endpoints (create, token guessing, confirm).
+- OTP (email/SMS) for "manage booking" by reference + email, instead of only the guest token.
+- KMS / secret manager for `BOOKING_DATA_KEY` (+ rotation to `v2:` values).
+- Real insurance partner behind `InsuranceProvider`.
+- Admin exception queue for stuck CONFIRMING bookings + Duffel `order.created` / `order.creation_failed`
+  webhook reconciliation.
+- Expiry sweep job (expiry is lazy today).
 
 ## Commands (run from repo root)
 - `pnpm --filter @ota/api dev` · `test` · `test:e2e` · `build`
