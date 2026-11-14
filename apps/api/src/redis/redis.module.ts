@@ -1,9 +1,10 @@
 import { Global, Inject, Logger, Module, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Redis } from 'ioredis';
+import { JsonCacheService } from './json-cache.service.js';
+import { REDIS_CLIENT } from './redis.constants.js';
 
-// A Symbol token avoids name clashes when we inject the client anywhere in the app.
-export const REDIS_CLIENT = Symbol('REDIS_CLIENT');
+export { REDIS_CLIENT };
 
 // ioredis emits 'error' on every reconnect attempt (several per second while Redis is down),
 // so we log at most once per window to keep logs readable.
@@ -33,7 +34,7 @@ function createRedisClient(config: ConfigService): Redis {
 }
 
 // @Global: one shared Redis connection for the whole app (cache, TBO token, BullMQ later)
-// instead of every module opening its own connection.
+// instead of every module opening its own connection. JsonCacheService wraps it for caching.
 @Global()
 @Module({
   providers: [
@@ -42,8 +43,9 @@ function createRedisClient(config: ConfigService): Redis {
       inject: [ConfigService],
       useFactory: createRedisClient,
     },
+    JsonCacheService,
   ],
-  exports: [REDIS_CLIENT],
+  exports: [REDIS_CLIENT, JsonCacheService],
 })
 export class RedisModule implements OnApplicationShutdown {
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}

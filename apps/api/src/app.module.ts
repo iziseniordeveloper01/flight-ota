@@ -6,6 +6,7 @@ import { RedisModule } from './redis/redis.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { HealthModule } from './health/health.module.js';
 import { AirportsModule } from './airports/airports.module.js';
+import { FlightsModule } from './flights/flights.module.js';
 
 @Module({
   imports: [
@@ -23,7 +24,8 @@ import { AirportsModule } from './airports/airports.module.js';
     PrismaModule,
     HealthModule,
     AirportsModule,
-    // Next steps will add: AuthModule, SearchModule ...
+    FlightsModule,
+    // Next steps will add: AuthModule, BookingModule ...
   ],
 })
 export class AppModule {}
