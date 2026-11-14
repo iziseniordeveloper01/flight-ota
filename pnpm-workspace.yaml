@@ -1,3 +1,11 @@
 packages:
   - "apps/*"
   - "packages/*"
+
+# pnpm 10 blocks dependency install scripts by default (supply-chain safety).
+# Allow only the ones we need:
+# - prisma: preinstall checks the Node version.
+# - @prisma/engines: postinstall downloads the schema engine used by `prisma migrate`.
+onlyBuiltDependencies:
+  - prisma
+  - "@prisma/engines"

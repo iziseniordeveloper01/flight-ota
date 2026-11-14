@@ -10,3 +10,5 @@ coverage/
 !.env.example
 # TypeScript incremental build cache
 *.tsbuildinfo
+# Prisma generated client — rebuilt by `prisma generate`
+packages/db/src/generated/

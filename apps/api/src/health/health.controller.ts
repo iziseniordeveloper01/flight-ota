@@ -2,12 +2,17 @@ import { Controller, Get, Inject, ServiceUnavailableException } from '@nestjs/co
 import { Redis } from 'ioredis';
 import { withTimeout } from '../common/with-timeout.js';
 import { REDIS_CLIENT } from '../redis/redis.module.js';
+import type { PrismaClient } from '@ota/db';
+import { PRISMA } from '../prisma/prisma.module.js';
 
 type CheckStatus = 'up' | 'down';
 
 @Controller('health')
 export class HealthController {
-  constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
+    constructor(
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    @Inject(PRISMA) private readonly prisma: PrismaClient,
+  ) {}
 
   // Used by AWS load balancer + uptime monitors: 200 = healthy, 503 = take this instance out.
   @Get()
@@ -15,7 +20,7 @@ export class HealthController {
     const startedAt = Date.now();
     const checks: Record<string, CheckStatus> = {
       redis: await this.pingRedis(),
-      // TODO (Step 3): add database check via Prisma
+      database: await this.pingDatabase(),
     };
 
     const healthy = Object.values(checks).every((s) => s === 'up');
@@ -39,6 +44,17 @@ export class HealthController {
       // Guards against a half-open connection where 'ready' is stale but replies never come.
       const reply = await withTimeout(this.redis.ping(), 1000, 'redis ping');
       return reply === 'PONG' ? 'up' : 'down';
+    } catch {
+      return 'down';
+    }
+  }
+
+  private async pingDatabase(): Promise<CheckStatus> {
+    try {
+      // Cheapest real round-trip through the pg pool. The pool itself waits up to 5s for a
+      // connection, so the 1s timeout keeps a slow/unreachable DB from stalling the health check.
+      await withTimeout(this.prisma.$queryRaw`SELECT 1`, 1000, 'database ping');
+      return 'up';
     } catch {
       return 'down';
     }

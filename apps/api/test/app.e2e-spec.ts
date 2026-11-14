@@ -29,10 +29,11 @@ describe('API (e2e)', () => {
     await app?.close();
   });
 
-  it('GET /v1/health → 200 with redis up', async () => {
+  it('GET /v1/health → 200 with redis and database up', async () => {
     const res = await request(app.getHttpServer()).get('/v1/health').expect(200);
     expect(res.body.status).toBe('ok');
     expect(res.body.checks.redis).toBe('up');
+    expect(res.body.checks.database).toBe('up');
   });
 
   it('GET /health → 404 (global /v1 prefix is enforced)', async () => {

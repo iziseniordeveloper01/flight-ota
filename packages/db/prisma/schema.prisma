@@ -1,0 +1,71 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  // We compile with TypeScript NodeNext (ESM): generated imports must end in .js
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+  // Prisma 7: connection URL lives in prisma.config.ts, not here
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+}
+
+model User {
+  // UUID v7 is time-ordered: unguessable like UUID v4, but index-friendly like an auto-increment
+  id              String     @id @default(uuid(7)) @db.Uuid
+  email           String     @unique
+  phone           String?    @unique
+  passwordHash    String?    @map("password_hash") // null for Google/OTP-only users
+  googleId        String?    @unique @map("google_id")
+  firstName       String?    @map("first_name")
+  lastName        String?    @map("last_name")
+  locale          String     @default("en") @db.VarChar(10)
+  currency        String     @default("USD") @db.Char(3) // ISO 4217
+  status          UserStatus @default(ACTIVE)
+  emailVerifiedAt DateTime?  @map("email_verified_at") @db.Timestamptz(3)
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt       DateTime   @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("users")
+}
+
+model Airport {
+  iataCode    String   @id @map("iata_code") @db.Char(3) // DEL, BOM, DXB — natural, stable key
+  icaoCode    String?  @map("icao_code") @db.VarChar(4)
+  name        String
+  city        String?
+  countryCode String   @map("country_code") @db.Char(2) // ISO 3166-1 alpha-2
+  // IANA timezone (e.g. Asia/Kolkata). OurAirports has none — filled later from another source.
+  timezone    String?  @db.VarChar(64)
+  latitude    Decimal? @db.Decimal(9, 6)
+  longitude   Decimal? @db.Decimal(9, 6)
+  type        String   @db.VarChar(20) // large_airport | medium_airport
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@index([countryCode])
+  @@index([city])
+  @@map("airports")
+}
+
+model Airline {
+  // IATA codes can be reused by defunct airlines; we only store active ones, so it's unique for us
+  iataCode    String   @id @map("iata_code") @db.VarChar(3)
+  icaoCode    String?  @map("icao_code") @db.Char(3)
+  name        String
+  countryCode String?  @map("country_code") @db.Char(2)
+  logoUrl     String?  @map("logo_url")
+  isLowCost   Boolean  @default(false) @map("is_low_cost")
+  isActive    Boolean  @default(true) @map("is_active")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  @@map("airlines")
+}  

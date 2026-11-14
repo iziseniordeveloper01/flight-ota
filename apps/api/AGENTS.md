@@ -14,6 +14,7 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
 - `redis/` global ioredis client (`REDIS_CLIENT` token), throttled error logging
 - `health/` GET /v1/health → 200 ok / 503 degraded
 - `common/` shared helpers (withTimeout)
+- `prisma/` global Prisma client (`PRISMA` token) from `@ota/db`; health pings it with `SELECT 1`
 
 ## Commands (run from repo root)
 - `pnpm --filter @ota/api dev` · `test` · `test:e2e` · `build`
