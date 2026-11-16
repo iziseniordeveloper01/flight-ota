@@ -6,10 +6,17 @@ through constructors), ESM + NodeNext, Vitest.
 ## Layout
 - `src/types.ts` normalized domain types · `src/adapter.ts` `SupplierAdapter` · `src/errors.ts` `SupplierError`
 - `src/money.ts` BigInt decimal-string money helpers · `src/call.ts` `callSignal()` (timeout + caller abort)
+- `src/fingerprint.ts` `offerFingerprint(offer)`: the same fare across searches (every segment's marketing
+  carrier + flight number + route + local departure + cabin, fare brand, passenger type counts). Used to
+  re-shop at checkout; ids/refs/prices are deliberately not part of it.
 - `src/mock/` deterministic, stateless offline supplier: `supplierOfferId` is base64url JSON of the
   search request + offer index, and `price()` regenerates the offer from it (survives restarts; past
   departure date → OFFER_EXPIRED). Bags/seats/orders are regenerated from the offer id too (service ids
-  are deterministic strings; `mko_…` order ids encode the result). Scenarios:
+  are deterministic strings; `mko_…` order ids encode the result). Flights and prices are deterministic
+  (stable fingerprints), but each search is a new "offer request": ids carry a random per-search nonce and
+  only ONE order per nonce is allowed (another idempotency key → OFFER_EXPIRED, like Duffel's
+  `offer_request_already_booked`; the instance remembers booked nonces in memory). Segments > 6h fly a
+  wide-body: A350/787 and a 3-4-3 seat map (ABC|DEFG|HJK, 42 rows), e.g. CDG→JFK direct. Scenarios:
   - routes: PVD→RAI no offers, STN→LHR TIMEOUT, LHR→STN price rises on `price()`,
     LGW→LHR "late booking": within 14 days of departure (by the injected `now`) the fare is +10% and the
     23kg bag sells out (used by the checkout re-price e2e tests)
@@ -24,8 +31,8 @@ through constructors), ESM + NodeNext, Vitest.
   `retrieveOrder(lookup)` (by supplierOrderId, or — after a lost response — by idempotencyKey + lead name).
 - Duffel has NO Idempotency-Key: never retry `createOrder`. Our booking id goes into `order.metadata.ota_booking_id`.
   Order creation needs `timeoutMs` ≥ 130 000 (Duffel guidance).
-- Total ≠ `expectedTotal` → `PRICE_CHANGED` (with `newTotal` when known). Duffel `order_creation_already_attempted`
-  → OFFER_EXPIRED.
+- Total ≠ `expectedTotal` → `PRICE_CHANGED` (with `newTotal` when known). Duffel `offer_request_already_booked`
+  / `order_creation_already_attempted` (one order per offer request) → OFFER_EXPIRED.
 - Supplier naming conventions (e.g. mononym = given name repeated as family name for Duffel) live in the
   adapter, never in the API.
 

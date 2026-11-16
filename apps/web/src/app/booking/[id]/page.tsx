@@ -30,7 +30,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<'/
       <h1 className="sr-only">{messages.booking.title}</h1>
       <div className="mt-4 flex flex-col gap-3">
         {ancillaries && <Countdown expiresAt={booking.expiresAt} searchUrl={searchUrl} />}
-        {booking.demo && <DemoNote>{messages.booking.demoNote}</DemoNote>}
+        {booking.demo && <DemoNote compact>{messages.booking.demoShort}</DemoNote>}
         {previous && (
           <output className="block rounded-lg bg-warning p-3 font-medium text-warning-foreground">
             {messages.booking.priceChanged(formatMoney(previous), formatMoney(booking.price.fare))}

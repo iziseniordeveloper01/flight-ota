@@ -99,6 +99,6 @@ test('booking flow: trip summary, booking page, seat map, review, complete', asy
 
   const pnr = await page.getByTestId('pnr').textContent();
   const reference = await page.getByTestId('booking-reference').textContent();
-  const total = await page.getByText('Total paid (demo)').locator('..').locator('dd').textContent();
+  const total = await page.getByRole('region', { name: 'Price breakdown' }).locator('dd').last().textContent();
   console.log(`[${name}] PNR=${pnr} reference=${reference} total=${total}`);
 });

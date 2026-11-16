@@ -38,6 +38,9 @@ test('DEL → BOM: 1 adult, bag + seat + insurance → review → confirm → PN
   await expect(page.getByText(/^Adult 1: Seat \d+[A-K] · /)).toBeVisible();
 
   await continueToReview(page);
+  const demo = page.getByRole('region', { name: 'Demo booking' });
+  await expect(demo.getByRole('link', { name: 'Terms and Conditions' })).toHaveAttribute('href', '/terms');
+  await expect(demo.getByRole('link', { name: 'Privacy Policy' })).toHaveAttribute('href', '/privacy');
   await expect(page.getByText('Arjun Tester').first()).toBeVisible();
   await expect(page.getByText('Travel Protection (Demo)')).toBeVisible();
   await expect(page.getByText(/^Adult 1 · Seat \d+[A-K] · DEL → BOM$/)).toBeVisible();
@@ -49,6 +52,8 @@ test('DEL → BOM: 1 adult, bag + seat + insurance → review → confirm → PN
   await expect(page.getByTestId('pnr')).toHaveText(/^[A-Z0-9]{6}$/);
   await expect(page.getByText('Test booking — no real ticket issued.')).toBeVisible();
   await expect(page.getByText(/DEMO-[A-Z0-9]+/).first()).toBeVisible();
+  await expect(page.getByText('Save these references — you’ll need them to manage your booking.')).toBeVisible();
+  await expect(page.getByText(/Total paid|Confirmation details for/)).toHaveCount(0);
 });
 
 test('DEL → DXB (international): passport fields appear and are saved masked', async ({ page }) => {

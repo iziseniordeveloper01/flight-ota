@@ -56,3 +56,17 @@ test('search DEL → BOM, filter direct, open offer details', async ({ page }) =
   await expect(details.getByText(/\$\d[\d,]*\.\d{2}/).first()).toBeVisible();
   await expect(details.getByRole('link', { name: 'Continue to booking' })).toHaveAttribute('href', /^\/flights\/confirm\?offer=mock%3A/);
 });
+
+test('footer links to the placeholder Terms and Privacy pages (noindex)', async ({ page }) => {
+  for (const [name, path] of [
+    ['Terms and Conditions', '/terms'],
+    ['Privacy Policy', '/privacy'],
+  ] as const) {
+    await page.goto('/');
+    await page.getByRole('contentinfo').getByRole('link', { name }).click();
+    await expect(page).toHaveURL(new RegExp(`${path}$`));
+    await expect(page.getByRole('heading', { level: 1, name })).toBeVisible();
+    await expect(page.getByText(new RegExp(`^${name} — to be provided by .+\\.$`))).toBeVisible();
+    await expect(page.locator('meta[name="robots"]')).toHaveAttribute('content', /noindex/);
+  }
+});

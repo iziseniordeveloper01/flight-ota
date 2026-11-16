@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { BadGatewayException, GoneException, HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import { BadGatewayException, HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import {
   lastFlightDate,
   type BookingAirport,
@@ -31,7 +31,7 @@ import { FieldEncryptionService } from '../common/crypto/field-encryption.servic
 import { withTimeout } from '../common/with-timeout.js';
 import { FlightsService } from '../flights/flights.service.js';
 import { toPublicOffer } from '../flights/public-offer.js';
-import { callSupplier, GONE_MESSAGE, logSupplierError } from '../flights/supplier-errors.js';
+import { callSupplier, FARE_GONE_MESSAGE, fareNoLongerAvailable, logSupplierError } from '../flights/supplier-errors.js';
 import { SUPPLIER_ADAPTER } from '../flights/supplier.provider.js';
 import { INSURANCE_PROVIDER, type InsuranceProvider } from '../insurance/insurance.provider.js';
 import { JsonCacheService } from '../redis/json-cache.service.js';
@@ -96,8 +96,9 @@ export class BookingsService {
     priceChanged: boolean;
     previousTotal?: Money;
   }> {
-    // Fresh re-price against what the customer saw in the results (410 when gone).
-    const priced = await this.flights.getOffer(offerId);
+    // The same fare from a fresh search (one order per supplier search), priced against what the
+    // customer saw. 410 FARE_NO_LONGER_AVAILABLE when it's gone.
+    const priced = await this.flights.reshop(offerId);
     const total = priced.price.total;
     // Shown once, stored only as a hash: whoever holds it can manage this booking.
     const guestToken = randomBytes(32).toString('base64url');
@@ -579,6 +580,7 @@ export class BookingsService {
           newTotal: data.newTotal as Money | undefined,
         });
       case 'BOOKING_EXPIRED':
+      case 'FARE_NO_LONGER_AVAILABLE':
         return bookingError(HttpStatus.GONE, code, message);
       case 'BOOKING_REJECTED':
         return bookingError(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
@@ -654,7 +656,7 @@ export class BookingsService {
 
   // A booking can only be served by the supplier it was made with (SUPPLIER may have changed).
   private assertSupplier(booking: BookingWithDetails): void {
-    if (booking.supplier !== this.adapter.name) throw new GoneException(GONE_MESSAGE);
+    if (booking.supplier !== this.adapter.name) throw fareNoLongerAvailable();
   }
 
   private supplierCall<T>(booking: BookingWithDetails, operation: string, call: () => Promise<T>): Promise<T> {
@@ -785,7 +787,8 @@ function failureOf(err: SupplierError): { code: BookingErrorCode; message: strin
       return { code: 'PRICE_CHANGED', message: 'The airline changed the price. Please start a new booking.' };
     case 'OFFER_EXPIRED':
     case 'OFFER_NOT_FOUND':
-      return { code: 'BOOKING_EXPIRED', message: GONE_MESSAGE };
+      // Includes Duffel's offer_request_already_booked: the customer must search again.
+      return { code: 'FARE_NO_LONGER_AVAILABLE', message: FARE_GONE_MESSAGE };
     case 'INVALID_REQUEST':
       return { code: 'BOOKING_REJECTED', message: 'The airline rejected the booking details.' };
     default:

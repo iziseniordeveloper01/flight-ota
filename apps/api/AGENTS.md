@@ -22,7 +22,8 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
 ## Current modules
 - `config/` env validation
 - `redis/` global ioredis client (`REDIS_CLIENT` token), throttled error logging; `JsonCacheService`
-  (get / set / setMany with 200ms timeout, fail-open)
+  (get / set / setMany with 200ms timeout, fail-open; `getRequired` for Redis-only records such as the
+  offer a customer saw: 1s timeout, throws on failure so an outage is a 503, never a fake "gone")
 - `health/` GET /v1/health → 200 ok / 503 degraded
 - `common/` shared helpers: `withTimeout`, `escapeLike` (LIKE wildcard escaping), `ZodValidationPipe` (400 `{ message: 'Validation failed', issues }`)
 - `prisma/` global Prisma client (`PRISMA` token) from `@ota/db`; health pings it with `SELECT 1`
@@ -36,10 +37,16 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
 - `flights/` supplier-backed search. `SUPPLIER=mock|duffel` (env.ts; `DUFFEL_ACCESS_TOKEN` required for duffel).
   - POST /v1/flights/search (Zod body) → `{ data, meta: { supplier, cached, count, currency, demo } }`, sorted by
     total (left in supplier order + warning if currencies are mixed). Cache `flights:search:v1:<sha256>` TTL
-    min(10 min, earliest offer expiry); each offer at `flights:offer:v1:<id>` TTL until expiry (min 60s).
+    min(10 min, earliest offer expiry); each offer at `flights:offer:v2:<id>` as `{ offer, search }` (the
+    SearchRequest is server-only, kept beside the offer so it never leaks) TTL until expiry (min 60s).
+  - `FlightsService.reshop(id)`: fresh search with the cached offer's request (skips the search cache read,
+    writes the new results), picks the offer with the same `offerFingerprint()` (same total preferred, else
+    cheapest) → `PricedOffer` vs the cached total. No match → 410 FARE_NO_LONGER_AVAILABLE.
   - GET /v1/flights/offers/:id → re-prices via `adapter.price()` against the cached total → `{ data: PricedOffer }`.
     Missing/expired offer → 410; Redis down → 503.
-  - SupplierError → HTTP: INVALID_REQUEST 400, OFFER_NOT_FOUND/OFFER_EXPIRED 410, TIMEOUT 504,
+  - SupplierError → HTTP: INVALID_REQUEST 400, OFFER_NOT_FOUND/OFFER_EXPIRED 410 `{ code:
+    'FARE_NO_LONGER_AVAILABLE', message: 'This fare is no longer available. Please search again.' }`
+    (`fareNoLongerAvailable()`, also for a missing cached offer), TIMEOUT 504,
     UNAVAILABLE/UPSTREAM_ERROR 502. Responses are `Cache-Control: no-store`.
   - e2e overrides `SUPPLIER_ADAPTER` with `MockSupplier` (independent of .env).
   - Supplier error → HTTP mapping is shared: `flights/supplier-errors.ts` (`callSupplier`). Exports the
@@ -50,8 +57,10 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
 - `common/crypto/` `FieldEncryptionService`: AES-256-GCM, `v1:<iv>:<tag>:<ct>`, key `BOOKING_DATA_KEY`
   (base64, 32 bytes, required). The version prefix allows key rotation.
 - `bookings/` guest checkout (all `/v1/bookings…`, `Cache-Control: no-store`, schemas from `@ota/contracts`):
-  - `POST /bookings {offerId}` → re-prices (FlightsService.getOffer, 410 if gone) → DRAFT; returns the guest
-    token ONCE (`meta.guestToken`) + `priceChanged`. Everything else needs header `X-Booking-Token`.
+  - `POST /bookings {offerId}` → re-shops (`FlightsService.reshop`: the draft gets its OWN fresh supplier
+    offer — one supplier order per search — 410 FARE_NO_LONGER_AVAILABLE if gone) → DRAFT; returns the guest
+    token ONCE (`meta.guestToken`) + `priceChanged`/`previousTotal` (fresh total ≠ what the customer saw).
+    Everything else needs header `X-Booking-Token`.
   - `GET /bookings/:id` (lazy expiry; CONFIRMING → `retrieveOrder` recovery, throttled 10s via Redis),
     `GET …/ancillaries`, `GET …/seat-maps` (Redis `bookings:{ancillaries,seat-maps}:v1:<id>`, TTL = offer expiry;
     ancillaries are served with `identityDocumentRequired` RESOLVED: supplier value, else international trip;
@@ -63,7 +72,9 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
     DRAFT, amounts/snapshot updated, 422 PRICE_CHANGED {previousTotal,newTotal} — calling again accepts;
     add-on gone → 422 SERVICE_UNAVAILABLE {serviceIds}; else → PENDING_PAYMENT),
     `POST …/confirm-demo` (header `Idempotency-Key`; **dev/test only, 404 when NODE_ENV=production**).
-  - Errors: 400 schema, 404 not found / bad token, 409 ILLEGAL_STATE / IDEMPOTENCY_CONFLICT, 410 expired,
+  - Errors: 400 schema, 404 not found / bad token, 409 ILLEGAL_STATE / IDEMPOTENCY_CONFLICT, 410
+    BOOKING_EXPIRED (booking hold passed) / FARE_NO_LONGER_AVAILABLE (fare gone, incl. supplier OFFER_EXPIRED
+    at confirm → booking FAILED),
     422 `{ code, message, issues? }` (AGE_CATEGORY_MISMATCH, NAME_TOO_LONG, DOCUMENT_REQUIRED, PRICE_CHANGED…),
     502/504 supplier. Codes: `BookingErrorCode` in contracts.
 

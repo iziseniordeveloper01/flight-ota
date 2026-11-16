@@ -29,6 +29,9 @@
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-warning-foreground: var(--warning-foreground);
+  --color-seat-paid: var(--seat-paid);
+  --color-seat-paid-foreground: var(--seat-paid-foreground);
+  --color-seat-paid-border: var(--seat-paid-border);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

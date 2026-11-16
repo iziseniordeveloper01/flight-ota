@@ -144,6 +144,7 @@ describe('Flights (e2e)', () => {
   it('unknown offer id → 410', async () => {
     const res = await getOffer('mock:mk_unknown_0').expect(410);
     expect(res.body.message).toMatch(/search again/i);
+    expect(res.body.code).toBe('FARE_NO_LONGER_AVAILABLE');
   });
 
   it('malformed offer id → 400', async () => {

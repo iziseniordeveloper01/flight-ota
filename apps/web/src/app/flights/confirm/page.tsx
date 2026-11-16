@@ -47,6 +47,7 @@ export default async function TripSummaryPage({ searchParams }: PageProps<'/flig
   const offer = result.data;
   const airports = await airportNames(offer.slices.flatMap((s) => s.segments.flatMap((x) => [x.origin, x.destination])));
   const travellers = offer.passengers.length;
+  const searchUrl = searchUrlForOffer(offer);
 
   return (
     <div className="mx-auto max-w-6xl px-4 pt-4 pb-32 lg:pb-10">
@@ -76,8 +77,8 @@ export default async function TripSummaryPage({ searchParams }: PageProps<'/flig
           <p className="mt-2 text-sm text-muted-foreground">
             {messages.trip.travellers}: {messages.pax.travellers(travellers)} · {messages.trip.taxesIncluded}
           </p>
-          <CheckoutButton offerId={offer.id} className="mt-4 hidden lg:flex" />
-          <Link href={searchUrlForOffer(offer)} className="mt-3 hidden min-h-11 items-center justify-center text-sm font-medium text-primary underline-offset-4 hover:underline lg:flex">
+          <CheckoutButton offerId={offer.id} searchUrl={searchUrl} className="mt-4 hidden lg:flex" />
+          <Link href={searchUrl} className="mt-3 hidden min-h-11 items-center justify-center text-sm font-medium text-primary underline-offset-4 hover:underline lg:flex">
             {messages.booking.backToResults}
           </Link>
         </aside>
@@ -90,7 +91,7 @@ export default async function TripSummaryPage({ searchParams }: PageProps<'/flig
             <p className="text-lg font-bold tabular-nums">{formatMoney(offer.price.total)}</p>
             <p className="text-xs text-muted-foreground">{messages.offer.totalFor(travellers)}</p>
           </div>
-          <CheckoutButton offerId={offer.id} className="w-44" />
+          <CheckoutButton offerId={offer.id} searchUrl={searchUrl} className="w-44" />
         </div>
       </div>
     </div>

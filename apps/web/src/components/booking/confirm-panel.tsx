@@ -19,7 +19,15 @@ type Phase =
   | { kind: 'idle' }
   | { kind: 'confirming' }
   | { kind: 'slow' } // still CONFIRMING after the polling window
-  | { kind: 'failed'; message: string; priceChange: string | null };
+  | { kind: 'failed'; message: string; priceChange: string | null; fareGone: boolean };
+
+const FARE_GONE = 'FARE_NO_LONGER_AVAILABLE';
+
+function failedPhase(failure: PublicBooking['failure']): Phase {
+  return failure?.code === FARE_GONE
+    ? { kind: 'failed', message: messages.errors.fareGone, priceChange: null, fareGone: true }
+    : { kind: 'failed', message: failure?.message ?? messages.review.failedTitle, priceChange: null, fareGone: false };
+}
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -35,7 +43,7 @@ export function ConfirmPanel({ booking }: { booking: PublicBooking }) {
     booking.status === 'CONFIRMING'
       ? { kind: 'confirming' }
       : booking.status === 'FAILED'
-        ? { kind: 'failed', message: booking.failure?.message ?? messages.review.failedTitle, priceChange: null }
+        ? failedPhase(booking.failure)
         : { kind: 'idle' },
   );
   const alive = useRef(true);
@@ -54,7 +62,7 @@ export function ConfirmPanel({ booking }: { booking: PublicBooking }) {
       return true;
     }
     if (b.status === 'FAILED') {
-      setPhase({ kind: 'failed', message: b.failure?.message ?? messages.review.failedTitle, priceChange: null });
+      setPhase(failedPhase(b.failure));
       return true;
     }
     return false;
@@ -96,8 +104,9 @@ export function ConfirmPanel({ booking }: { booking: PublicBooking }) {
     } catch (err) {
       if (err instanceof ApiError && err.code) {
         if (err.code === 'ILLEGAL_STATE') return router.refresh();
+        if (err.code === FARE_GONE) return setPhase(failedPhase({ code: FARE_GONE, message: err.message }));
         const changed = err.body?.previousTotal && err.body.newTotal ? messages.review.failedPriceChanged(formatMoney(err.body.previousTotal), formatMoney(err.body.newTotal)) : null;
-        setPhase({ kind: 'failed', message: err.message, priceChange: changed });
+        setPhase({ kind: 'failed', message: err.message, priceChange: changed, fareGone: false });
         return;
       }
       // Timeout / network / proxy error: the order may still be in progress — never re-send, just watch.
@@ -116,7 +125,7 @@ export function ConfirmPanel({ booking }: { booking: PublicBooking }) {
         <p>{phase.message}</p>
         <p className="text-sm text-muted-foreground">{messages.review.noCharge}</p>
         <Button asChild size="lg" className="w-full sm:w-auto">
-          <Link href={searchUrlForOffer(booking.offer)}>{messages.review.newSearch}</Link>
+          <Link href={searchUrlForOffer(booking.offer)}>{phase.fareGone ? messages.trip.searchAgain : messages.review.newSearch}</Link>
         </Button>
       </div>
     );
@@ -154,6 +163,10 @@ export function ConfirmPanel({ booking }: { booking: PublicBooking }) {
                   {messages.review.agree}{' '}
                   <a href="/terms" target="_blank" rel="noopener" className="font-medium text-primary underline underline-offset-4">
                     {messages.review.terms}
+                  </a>{' '}
+                  {messages.review.and}{' '}
+                  <a href="/privacy" target="_blank" rel="noopener" className="font-medium text-primary underline underline-offset-4">
+                    {messages.review.privacy}
                   </a>
                 </span>
               </label>

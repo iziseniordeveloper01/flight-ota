@@ -286,7 +286,7 @@ export interface BookingWarning {
   message: string;
 }
 
-/** 422/409/410 business errors from the bookings API. */
+/** 422/409/410 business errors from the bookings API (FARE_NO_LONGER_AVAILABLE also from flights). */
 export type BookingErrorCode =
   | 'AGE_CATEGORY_MISMATCH'
   | 'PASSENGERS_MISMATCH'
@@ -302,6 +302,8 @@ export type BookingErrorCode =
   | 'ILLEGAL_STATE'
   | 'IDEMPOTENCY_CONFLICT'
   | 'BOOKING_EXPIRED'
+  /** 410 (also from /flights/offers/:id): the fare can't be booked any more — search again. */
+  | 'FARE_NO_LONGER_AVAILABLE'
   | 'SUPPLIER_ERROR';
 
 export interface BookingIssue {

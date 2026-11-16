@@ -13,6 +13,7 @@ export {
   toMinor,
 } from './money.js';
 export { DEFAULT_TIMEOUT_MS } from './call.js';
+export { offerFingerprint } from './fingerprint.js';
 export { MockSupplier, type MockSupplierOptions } from './mock/mock.supplier.js';
 export { DuffelAdapter, type DuffelAdapterOptions } from './duffel/duffel.adapter.js';
 export { SEARCH_CHILD_AGE, SEARCH_INFANT_AGE } from './passengers.js';

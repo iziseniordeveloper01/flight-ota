@@ -4,7 +4,7 @@ import request from 'supertest';
 import type { App } from 'supertest/types.js';
 import type { Redis } from 'ioredis';
 import type { PrismaClient } from '@ota/db';
-import { compareMoney, MockSupplier, sumMoney, type FlightOffer, type Money } from '@ota/suppliers';
+import { compareMoney, MockSupplier, offerFingerprint, sumMoney, type FlightOffer, type Money } from '@ota/suppliers';
 import type { PublicBooking, SeatMap, UpdateBookingDetailsInput } from '@ota/contracts';
 import { AppModule } from './../src/app.module.js';
 import { configureApp } from './../src/app.setup.js';
@@ -327,8 +327,90 @@ describe('Bookings (e2e)', () => {
     expect(create).toHaveBeenCalledTimes(1);
   });
 
+  describe('re-shop at checkout (one supplier order per search)', () => {
+    const route = { origin: 'HKG', destination: 'SYD' };
+    const supplierIds = async (id: string) =>
+      prisma.booking.findUniqueOrThrow({ where: { id }, select: { supplierOfferId: true, supplierOrderId: true } });
+
+    async function confirm(offer: FlightOffer, id: string, token: string, key: string) {
+      await as(token).put(`/v1/bookings/${id}/details`, details(offer)).expect(200);
+      await as(token).post(`/v1/bookings/${id}/checkout`).expect(200);
+      return as(token).post(`/v1/bookings/${id}/confirm-demo`, key);
+    }
+
+    it('two bookings from the same cached search both confirm, with different supplier orders', async () => {
+      const offer = await firstOffer({ ...route, departureDate: daysAhead(45) });
+      const a = await createBooking(offer);
+      const b = await createBooking(offer);
+      const [idsA, idsB] = [await supplierIds(a.id), await supplierIds(b.id)];
+      // Each draft got its own fresh offer request — never the shared cached offer.
+      expect(new Set([offer.supplierOfferId, idsA.supplierOfferId, idsB.supplierOfferId]).size).toBe(3);
+      expect(a.res.body.data.offer.price.total).toEqual(offer.price.total);
+
+      const confirmA = await confirm(offer, a.id, a.token, 'reshop-a-key-1');
+      const confirmB = await confirm(offer, b.id, b.token, 'reshop-b-key-1');
+      expect(confirmA.status).toBe(200);
+      expect(confirmB.status).toBe(200);
+      expect(confirmA.body.data.status).toBe('CONFIRMED');
+      expect(confirmB.body.data.status).toBe('CONFIRMED');
+      expect(confirmA.body.data.pnr).not.toBe(confirmB.body.data.pnr);
+      const [orderA, orderB] = [(await supplierIds(a.id)).supplierOrderId, (await supplierIds(b.id)).supplierOrderId];
+      expect(orderA).toBeTruthy();
+      expect(orderA).not.toBe(orderB);
+    });
+
+    it('booking an offer request that already has an order → 410 FARE_NO_LONGER_AVAILABLE, FAILED', async () => {
+      const offer = await firstOffer({ ...route, departureDate: daysAhead(46) });
+      // Simulate a supplier handing the same offer request out twice (what re-shop prevents).
+      const search = vi.spyOn(mock, 'search');
+      const a = await createBooking(offer);
+      search.mockResolvedValueOnce(await search.mock.results[0].value);
+      const b = await createBooking(offer);
+      expect((await supplierIds(b.id)).supplierOfferId).toBe((await supplierIds(a.id)).supplierOfferId);
+
+      expect((await confirm(offer, a.id, a.token, 'reused-a-key-1')).status).toBe(200);
+      const res = await confirm(offer, b.id, b.token, 'reused-b-key-1');
+      expect(res.status).toBe(410);
+      expect(res.body).toMatchObject({ code: 'FARE_NO_LONGER_AVAILABLE', message: 'This fare is no longer available. Please search again.' });
+      const get = await as(b.token).get(`/v1/bookings/${b.id}`).expect(200);
+      expect(get.body.data).toMatchObject({ status: 'FAILED', failure: { code: 'FARE_NO_LONGER_AVAILABLE' } });
+    });
+
+    it('fare missing from the fresh search → 410 FARE_NO_LONGER_AVAILABLE, no booking', async () => {
+      const offer = await firstOffer({ ...route, departureDate: daysAhead(47) });
+      const before = await prisma.booking.count();
+      vi.spyOn(mock, 'search').mockImplementationOnce(async (req, opts) =>
+        (await MockSupplier.prototype.search.call(mock, req, opts)).filter((o) => offerFingerprint(o) !== offerFingerprint(offer)),
+      );
+      const res = await api().post('/v1/bookings').send({ offerId: offer.id }).expect(410);
+      expect(res.body).toMatchObject({ code: 'FARE_NO_LONGER_AVAILABLE', message: 'This fare is no longer available. Please search again.' });
+      expect(await prisma.booking.count()).toBe(before);
+    });
+
+    it('fresh search at another price → priceChanged with previousTotal; the draft uses the new price', async () => {
+      const offer = await firstOffer({ ...route, departureDate: daysAhead(48) });
+      const raised = { amount: sumMoney([offer.price.total, { amount: '9.99', currency: 'USD' }], 'USD').amount, currency: 'USD' };
+      vi.spyOn(mock, 'search').mockImplementationOnce(async (req, opts) =>
+        (await MockSupplier.prototype.search.call(mock, req, opts)).map((o) => ({ ...o, price: { ...o.price, total: raised } })),
+      );
+      const { res } = await createBooking(offer);
+      expect(res.body.meta).toMatchObject({ priceChanged: true, previousTotal: offer.price.total });
+      expect(res.body.data.price.total).toEqual(raised);
+    });
+
+    it('the fresh results are written to the search cache', async () => {
+      const body = { ...route, departureDate: daysAhead(49) };
+      const offer = await firstOffer(body);
+      const { id } = await createBooking(offer);
+      const again = await api().post('/v1/flights/search').send(body).expect(200);
+      expect(again.body.meta.cached).toBe(true);
+      expect(again.body.data.map((o: FlightOffer) => o.supplierOfferId)).toContain((await supplierIds(id)).supplierOfferId);
+    });
+  });
+
   it('expired offer: unknown offer → 410; booking read after expiry → EXPIRED, edits → 410', async () => {
-    await api().post('/v1/bookings').send({ offerId: 'mock:unknown' }).expect(410);
+    const unknown = await api().post('/v1/bookings').send({ offerId: 'mock:unknown' }).expect(410);
+    expect(unknown.body.code).toBe('FARE_NO_LONGER_AVAILABLE');
     const offer = await firstOffer({ origin: 'SIN', destination: 'NRT', departureDate: daysAhead(30) });
     const { id, token } = await createBooking(offer);
     await prisma.booking.update({ where: { id }, data: { offerExpiresAt: new Date(Date.now() - 1000) } });

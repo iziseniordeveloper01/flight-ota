@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { SupplierError } from '../errors.js';
 import { compareMoney, sumMoney, toMinor } from '../money.js';
+import { offerFingerprint } from '../fingerprint.js';
 import type { CreateOrderInput, FlightOffer, OrderLookup, SearchRequest } from '../types.js';
 import { MockSupplier } from './mock.supplier.js';
 
@@ -27,10 +28,14 @@ async function codeOf(promise: Promise<unknown>) {
 }
 
 describe('MockSupplier', () => {
-  it('is deterministic: same request → identical offers', async () => {
+  it('is deterministic: same request → same flights and prices; each search is a new offer request', async () => {
     const a = await new MockSupplier({ now: () => NOW }).search(base);
     const b = await new MockSupplier({ now: () => NOW }).search({ ...base });
-    expect(a).toEqual(b);
+    const withoutIds = (offers: FlightOffer[]) => offers.map(({ id: _i, supplierOfferId: _s, ...rest }) => rest);
+    expect(withoutIds(a)).toEqual(withoutIds(b));
+    expect(a.map(offerFingerprint)).toEqual(b.map(offerFingerprint));
+    // Ids differ per search (per-search nonce, like Duffel's offer request ids).
+    expect(a.every((o, i) => o.supplierOfferId !== b[i].supplierOfferId)).toBe(true);
     const other = await new MockSupplier({ now: () => NOW }).search({ ...base, departureDate: '2026-12-21' });
     expect(other.map((o) => o.price.total)).not.toEqual(a.map((o) => o.price.total));
   });
@@ -217,7 +222,9 @@ describe('MockSupplier booking', () => {
   });
 
   it('seat map: one per segment, rows 1–30 ABC|DEF, some taken, exit rows adults only, paid and free', async () => {
-    const offer = await firstOffer();
+    // LHR⇄SIN is short both ways in the mock (106/118 min): narrow-body.
+    const offer = await firstOffer({ ...roundTrip, origin: 'LHR', destination: 'SIN' });
+    expect(offer.slices.flatMap((s) => s.segments).every((s) => s.durationMinutes <= 360)).toBe(true);
     const maps = await supplier.getSeatMaps(offer.supplierOfferId);
     expect(maps.map((m) => m.segmentRef)).toEqual(offer.slices.flatMap((s) => s.segments.map((x) => x.ref)));
     const rows = maps[0].cabins[0].rows;
@@ -230,6 +237,37 @@ describe('MockSupplier booking', () => {
     expect(seats.find((s) => s.designator.startsWith('1') && s.designator.length === 2 && s.available)!.services[0].price.amount).toBe('25.00');
     expect(seats.find((s) => s.designator.startsWith('20') && s.available)!.services[0].price.amount).toBe('0.00');
     expect(rows.some((r) => r.sections.some((s) => s.elements[0].type === 'exit'))).toBe(true);
+  });
+
+  it('seat map: segments over 6h fly a wide-body, rows 1–42 ABC|DEFG|HJK', async () => {
+    // CDG→JFK direct is 635 min in the mock; its 1-stop legs are ~349 min (narrow-body).
+    const [direct, oneStop] = await supplier.search({ ...base, origin: 'CDG', destination: 'JFK' });
+    expect(direct.slices[0].segments[0].durationMinutes).toBeGreaterThan(360);
+    expect(direct.slices[0].segments[0].aircraft).toMatch(/A350|787/);
+    const [map] = await supplier.getSeatMaps(direct.supplierOfferId);
+    const seatRow = map.cabins[0].rows.find((r) => r.number === 30)!;
+    expect(seatRow.sections.map((s) => s.elements.map((e) => (e.type === 'seat' ? e.designator : e.type)))).toEqual([
+      ['30A', '30B', '30C'],
+      ['30D', '30E', '30F', '30G'],
+      ['30H', '30J', '30K'],
+    ]);
+    expect(map.cabins[0].rows.filter((r) => r.number !== null)).toHaveLength(42);
+    expect(oneStop.slices[0].segments.every((s) => s.durationMinutes <= 360)).toBe(true);
+    const [leg] = await supplier.getSeatMaps(oneStop.supplierOfferId);
+    expect(leg.cabins[0].rows.find((r) => r.number === 30)!.sections).toHaveLength(2);
+  });
+
+  it('one order per offer request: another booking of an offer from the same search → OFFER_EXPIRED', async () => {
+    const own = new MockSupplier({ now: () => NOW });
+    const [first, second] = await own.search(base);
+    await own.createOrder(orderInput(first, []));
+    // Same search, other offer, other booking: Duffel's offer_request_already_booked.
+    const other = { ...orderInput(second, []), idempotencyKey: 'booking-2' };
+    expect(await codeOf(own.createOrder(other))).toBe('OFFER_EXPIRED');
+    // A fresh search is a new offer request: bookable again.
+    const [fresh] = await own.search(base);
+    expect(offerFingerprint(fresh)).toBe(offerFingerprint(first));
+    await expect(own.createOrder({ ...orderInput(fresh, []), idempotencyKey: 'booking-2' })).resolves.toMatchObject({ status: 'confirmed' });
   });
 
   it('createOrder: total = fare + services; deterministic PNR; retrieveOrder by id', async () => {

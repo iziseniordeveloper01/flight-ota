@@ -32,6 +32,18 @@ nuqs. Talks only to `@ota/api` over HTTP; types and schemas come from `@ota/cont
   `NEXT_PUBLIC_API_URL`) and `WEB_ORIGIN`. Server components call the API directly with the cookie.
 - **Passenger PII** (names, DOB, passport) never goes to localStorage/sessionStorage/URLs. The step-1
   form keeps it in memory; a refresh restores it from GET booking (passport masked → `keepExisting`).
+- **Fare gone:** a 410 (API code `FARE_NO_LONGER_AVAILABLE`, e.g. the checkout re-shop found no match or
+  the airline's offer request was already booked) shows `messages.errors.fareGone` + "Search again" with
+  the original search (`searchUrlForOffer`) — on the trip summary (`CheckoutButton`) and at confirmation.
+- **Seat map:** fit-to-width — every row is a CSS grid with the cabin's shared columns; seat columns
+  scale 28–44px (`minmax(1.75rem, 2.75rem)`, WCAG 2.2 target ≥ 24px), so a 3-4-3 fits 360px with no
+  horizontal scroll; desktop gets 44px seats. Column letters sticky at the top of the map's own scroller,
+  row number left of every row, "▲ Front of aircraft" above row 1. Paid seats use the `--seat-paid*`
+  tokens (legend), never a "$" badge. Bottom bar: "Seat 14C · Window · $20.00 · Adult 1" (`findSeat`).
+  Keys come from the fixed grid (segment-deck-row-section-column), never array indexes.
+- **Stepper:** phones show only the active step's label (others number/check; labels stay for screen
+  readers). Step 1 has a one-line demo notice (`DemoNote compact`); review shows the demo panel only next
+  to Confirm; complete shows the references + "Save these references…" (no email is sent yet).
 - **Booking form:** React Hook Form + `zodResolver(bookingFormSchema(ctx))` — the contract schema plus
   the booking's rules (age category at the last flight, name length, passport). Form values have the API
   body's shape, so server issues map back with `setError(path)` (`lib/booking-errors.ts`). Whether a
@@ -44,7 +56,8 @@ nuqs. Talks only to `@ota/api` over HTTP; types and schemas come from `@ota/cont
   44px sizing. Local edits to `components/ui/*` are marked with a comment.
 
 ## Layout
-- `src/app` routes: `/` (home, server component + client `SearchWidget`), `/flights/search` (results),
+- `src/app` routes: `/` (home, server component + client `SearchWidget`), `/terms` + `/privacy` (noindex
+  placeholders "… to be provided by <brand>", linked from the footer and the review page), `/flights/search` (results),
   `/flights/confirm?offer=` (trip summary), `/booking/[id]` (step 1), `/booking/[id]/review` (step 2,
   demo confirm + polling), `/booking/[id]/complete` (step 3, printable); `/api/bookings/*` (BFF)
 - `src/components/booking` stepper, countdown, trip details, passenger/contact cards, date selects,
@@ -63,4 +76,7 @@ nuqs. Talks only to `@ota/api` over HTTP; types and schemas come from `@ota/cont
 - E2E: `pnpm --filter @ota/web test:e2e` — starts its own api on :4100 (`SUPPLIER=mock`) and web on :3100
   (build in `.next-e2e`). Needs `pnpm db:up` + seeded airports, and `pnpm exec playwright install chromium`.
 - Screenshots (manual, servers already running): `playwright test -c playwright.screenshots.config.ts`
-  → `e2e/screenshots/` (git-ignored).
+  → `e2e/screenshots/` (git-ignored). Projects: mobile (390), mobile-360, desktop. With the mock,
+  `SHOT_FROM=CDG SHOT_TO=JFK SHOT_AIRLINE=Direct SHOT_PHONE="06 12 34 56 78"` gives the 3-4-3 seat map.
+- `e2e/mobile-layout.spec.ts`: 360/390px seat maps (3-4-3 and 3-3, no horizontal scroll, ≥ 28px seats),
+  stepper labels, compact demo notice; desktop 44px seats.

@@ -35,6 +35,11 @@
   --warning: #fffbeb;
   --warning-foreground: #92400e; /* on --warning 6.8:1 */
 
+  /* Seat map: paid seats get their own tint (explained in the legend; no "$" badge) */
+  --seat-paid: #fef3c7; /* amber 100 */
+  --seat-paid-foreground: #92400e; /* on --seat-paid 6.4:1 */
+  --seat-paid-border: #b45309; /* on white 5.0:1 (WCAG 1.4.11 needs 3:1) */
+
   /* Shape */
   --radius: 0.75rem;
 }

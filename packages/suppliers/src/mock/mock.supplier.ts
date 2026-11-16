@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import type { SupplierAdapter } from '../adapter.js';
 import { SupplierError } from '../errors.js';
 import { addMinutesLocal } from '../local-time.js';
@@ -34,12 +35,18 @@ import type {
   Slice,
 } from '../types.js';
 
-// Offline, deterministic supplier for development and tests. Same request → same offers
-// (only expiresAt moves with the clock). No network, no Math.random.
+// Offline, deterministic supplier for development and tests. Same request → same flights, fares
+// and prices (only expiresAt moves with the clock), so offerFingerprint() is stable across searches.
+// No network, no Math.random in the generated data.
 // Stateless: each supplierOfferId encodes the search request + offer index, so price() regenerates
 // the offer on any instance — searches cached in Redis stay selectable across API restarts.
 // Bags, seats and orders are derived from the offer id too; service ids are deterministic strings
 // and createOrder() regenerates the catalogue to look them up (no stored state).
+//
+// Like Duffel, every search is a new "offer request": ids carry a random per-search nonce, and only
+// ONE order may be created per offer request (a second booking with another idempotency key →
+// OFFER_EXPIRED, Duffel's offer_request_already_booked). That rule needs memory, which lives in the
+// instance (lost on restart, not shared between API instances — enough for dev and tests).
 
 const OFFER_TTL_MS = 20 * 60_000;
 const OFFERS_PER_SEARCH = 10;
@@ -66,9 +73,21 @@ const BAGS = [
   { kg: 15, cents: 2_000n, max: 2 },
   { kg: 23, cents: 3_500n, max: 2 },
 ] as const;
-const SEAT_ROWS = 30;
-const SEAT_LETTERS = [['A', 'B', 'C'], ['D', 'E', 'F']];
-const EXIT_ROWS = new Set([12, 13]);
+// Segments longer than this fly a wide-body (3-4-3 seat map, wide-body aircraft name).
+const WIDE_BODY_MINUTES = 6 * 60;
+interface CabinLayout {
+  rows: number;
+  letters: string[][];
+  exitRows: Set<number>;
+  /** Rows 1..legroomUntil are "Extra legroom"; then cheap until cheapUntil; the rest free. */
+  legroomUntil: number;
+  cheapUntil: number;
+}
+const NARROW_BODY: CabinLayout = { rows: 30, letters: [['A', 'B', 'C'], ['D', 'E', 'F']], exitRows: new Set([12, 13]), legroomUntil: 4, cheapUntil: 11 };
+// No "I" column: airlines skip it (looks like a 1).
+const WIDE_BODY: CabinLayout = { rows: 42, letters: [['A', 'B', 'C'], ['D', 'E', 'F', 'G'], ['H', 'J', 'K']], exitRows: new Set([22]), legroomUntil: 5, cheapUntil: 15 };
+// Offer requests that already have an order (nonce → idempotency key); bounded.
+const MAX_BOOKED_REQUESTS = 10_000;
 const PNR_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
 interface MockFare {
@@ -109,7 +128,8 @@ const FARES: MockFare[] = [
 ];
 
 const HUBS = ['DXB', 'FRA', 'IST', 'DOH', 'AMS'];
-const AIRCRAFT = ['Airbus A320neo', 'Boeing 737-800', 'Airbus A350-900', 'Boeing 787-9'];
+const NARROW_AIRCRAFT = ['Airbus A320neo', 'Boeing 737-800'];
+const WIDE_AIRCRAFT = ['Airbus A350-900', 'Boeing 787-9'];
 const CABIN_MULTIPLIER: Record<CabinClass, bigint> = {
   economy: 1n,
   premium_economy: 2n,
@@ -157,6 +177,7 @@ export interface MockSupplierOptions {
 export class MockSupplier implements SupplierAdapter {
   readonly name = 'mock' as const;
   private readonly now: () => number;
+  private readonly bookedRequests = new Map<string, string>();
 
   constructor(options: MockSupplierOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -169,7 +190,8 @@ export class MockSupplier implements SupplierAdapter {
       throw new SupplierError('TIMEOUT', this.name, 'Mock supplier timed out (scenario route)');
     }
     if (route === NO_OFFERS_ROUTE) return [];
-    return this.generate(req).map(({ offer }) => offer);
+    const nonce = randomBytes(6).toString('base64url');
+    return this.generate(req, nonce).map(({ offer }) => offer);
   }
 
   async price(supplierOfferId: string, opts: PriceOptions = {}): Promise<PricedOffer> {
@@ -178,13 +200,13 @@ export class MockSupplier implements SupplierAdapter {
     if (!decoded) {
       throw new SupplierError('OFFER_NOT_FOUND', this.name, 'Offer not found');
     }
-    const { req, idx } = decoded;
+    const { req, idx, nonce } = decoded;
     // UTC date, same rule as the search date bounds in @ota/contracts.
     if (req.departureDate < new Date(this.now()).toISOString().slice(0, 10)) {
       throw new SupplierError('OFFER_EXPIRED', this.name, 'Offer has expired (departure date passed)');
     }
 
-    const generated = this.generate(req)[idx];
+    const generated = this.generate(req, nonce)[idx];
     const { offer, unitBaseCents } = generated;
     let { unitTaxCents } = generated;
     if (`${req.origin}-${req.destination}` === PRICE_CHANGE_ROUTE) {
@@ -224,6 +246,7 @@ export class MockSupplier implements SupplierAdapter {
     if (refs.size !== slots.size || input.passengers.some((p) => slots.get(p.ref) !== p.type)) {
       throw new SupplierError('INVALID_REQUEST', this.name, 'Passengers do not match the offer');
     }
+    this.claimOfferRequest(input);
     const names = input.passengers.map((p) => (p.familyName ?? '').toUpperCase());
     if (names.includes(FAIL_NAME)) {
       throw new SupplierError('UPSTREAM_ERROR', this.name, 'Mock airline rejected the order (scenario)');
@@ -264,6 +287,23 @@ export class MockSupplier implements SupplierAdapter {
       : null;
   }
 
+  // One order per offer request (search), like Duffel. The same idempotency key may retry (the
+  // mock's orders are derived from it); any other key fails, even if the first attempt failed.
+  private claimOfferRequest(input: CreateOrderInput): void {
+    const nonce = decodeOfferId(input.supplierOfferId)?.nonce;
+    if (!nonce) return; // ids from before nonces existed
+    const owner = this.bookedRequests.get(nonce);
+    if (owner !== undefined && owner !== input.idempotencyKey) {
+      throw new SupplierError('OFFER_EXPIRED', this.name, 'Offer request already booked (one order per search)');
+    }
+    if (owner === undefined) {
+      if (this.bookedRequests.size >= MAX_BOOKED_REQUESTS) {
+        this.bookedRequests.delete(this.bookedRequests.keys().next().value!);
+      }
+      this.bookedRequests.set(nonce, input.idempotencyKey);
+    }
+  }
+
   private isLate(req: SearchRequest): boolean {
     if (`${req.origin}-${req.destination}` !== LATE_ROUTE) return false;
     const today = new Date(this.now()).toISOString().slice(0, 10);
@@ -294,25 +334,32 @@ export class MockSupplier implements SupplierAdapter {
       );
   }
 
-  // Rows 1–30, ABC|DEF. Rows 1–4 extra legroom and 12–13 exit rows are paid (exit rows adults
-  // only), 5–11 cheap, 14+ free; ~20% of seats taken (hash-based, so stable per offer+segment).
+  // Narrow-body: rows 1–30, ABC|DEF, extra legroom 1–4, exit rows 12–13, cheap 5–11.
+  // Wide-body (segment > 6h): rows 1–42, ABC|DEFG|HJK, extra legroom 1–5, exit row 22, cheap 6–15.
+  // Extra legroom and exit rows are paid (exit rows adults only), the rest free; ~20% of seats
+  // taken (hash-based, so stable per offer+segment).
   private seatMap(offer: FlightOffer, segmentRef: string): SeatMap {
     const currency = offer.price.total.currency;
     const key = offerKey(offer.supplierOfferId);
     const seated = offer.passengers.filter((p) => p.type !== 'infant');
+    const segment = offer.slices.flatMap((s) => s.segments).find((s) => s.ref === segmentRef);
+    const layout = segment && isWideBody(segment.durationMinutes) ? WIDE_BODY : NARROW_BODY;
+    const firstExit = Math.min(...layout.exitRows);
+    const facilities: SeatMapElement[] = [{ type: 'facility', kind: 'galley' }, { type: 'facility', kind: 'lavatory' }];
     const rows: SeatMapRow[] = [
-      { number: null, sections: [{ elements: [{ type: 'facility', kind: 'galley' }] }, { elements: [{ type: 'facility', kind: 'lavatory' }] }] },
+      { number: null, sections: layout.letters.map((_, i) => ({ elements: [facilities[i % 2]] })) },
     ];
-    for (let row = 1; row <= SEAT_ROWS; row++) {
-      if (row === Math.min(...EXIT_ROWS)) {
-        rows.push({ number: null, sections: SEAT_LETTERS.map(() => ({ elements: [{ type: 'exit' }] })) });
+    for (let row = 1; row <= layout.rows; row++) {
+      if (row === firstExit) {
+        rows.push({ number: null, sections: layout.letters.map(() => ({ elements: [{ type: 'exit' }] })) });
       }
-      const exit = EXIT_ROWS.has(row);
-      const [name, cents] = row <= 4 ? ['Extra legroom', 2_500n] : exit ? ['Exit row', 3_000n] : row <= 11 ? ['Standard', 800n] : ['Standard', 0n];
+      const exit = layout.exitRows.has(row);
+      const [name, cents] =
+        row <= layout.legroomUntil ? ['Extra legroom', 2_500n] : exit ? ['Exit row', 3_000n] : row <= layout.cheapUntil ? ['Standard', 800n] : ['Standard', 0n];
       const price = moneyFromMinor(scaleCents(cents, currency), currency);
       rows.push({
         number: row,
-        sections: SEAT_LETTERS.map((letters) => ({
+        sections: layout.letters.map((letters) => ({
           elements: letters.map((letter): SeatMapElement => {
             const designator = `${row}${letter}`;
             const taken = hash(`${key}|${segmentRef}|${designator}`) % 5 === 0;
@@ -350,7 +397,7 @@ export class MockSupplier implements SupplierAdapter {
   }
 
   // All offers for a request, in a fixed order (the PRNG is sequential, so offer i depends on 0..i-1).
-  private generate(req: SearchRequest): GeneratedOffer[] {
+  private generate(req: SearchRequest, nonce: string | undefined): GeneratedOffer[] {
     const route = `${req.origin}-${req.destination}`;
     const seed = hash(
       [req.origin, req.destination, req.departureDate, req.returnDate ?? '', req.cabin,
@@ -381,7 +428,7 @@ export class MockSupplier implements SupplierAdapter {
       if (stops > 0) unitBaseCents = (unitBaseCents * 85n) / 100n;
       const unitTaxCents = (unitBaseCents * TAX_PCT) / 100n;
 
-      const supplierOfferId = encodeOfferId(req, i);
+      const supplierOfferId = encodeOfferId(req, i, nonce);
       const offer: FlightOffer = {
         id: `${this.name}:${supplierOfferId}`,
         supplier: this.name,
@@ -431,7 +478,8 @@ export class MockSupplier implements SupplierAdapter {
       departureAt: at,
       arrivalAt: addMinutesLocal(at, minutes),
       durationMinutes: minutes,
-      aircraft: AIRCRAFT[rand(AIRCRAFT.length)],
+      // One rand() call either way, so the rest of the sequence (and every price) is unchanged.
+      aircraft: (isWideBody(minutes) ? WIDE_AIRCRAFT : NARROW_AIRCRAFT)[rand(2)],
       cabin,
     });
 
@@ -479,9 +527,11 @@ interface OfferKey {
   cab: CabinClass;
   cur?: string;
   idx: number;
+  /** Per-search nonce: the "offer request" this offer belongs to. */
+  n?: string;
 }
 
-function encodeOfferId(req: SearchRequest, idx: number): string {
+function encodeOfferId(req: SearchRequest, idx: number, nonce: string | undefined): string {
   const key: OfferKey = {
     o: req.origin,
     d: req.destination,
@@ -493,6 +543,7 @@ function encodeOfferId(req: SearchRequest, idx: number): string {
     cab: req.cabin,
     cur: req.currency,
     idx,
+    n: nonce,
   };
   return Buffer.from(JSON.stringify(key)).toString('base64url');
 }
@@ -512,7 +563,7 @@ function isCount(v: unknown, min: number, max: number): v is number {
 
 // The id arrives from outside (via the API), so validate every field: a forged or corrupt id must
 // become OFFER_NOT_FOUND, never an exception or a nonsense offer.
-function decodeOfferId(id: string): { req: SearchRequest; idx: number } | null {
+function decodeOfferId(id: string): { req: SearchRequest; idx: number; nonce?: string } | null {
   let k: Partial<Record<keyof OfferKey, unknown>>;
   try {
     k = JSON.parse(Buffer.from(id, 'base64url').toString('utf8'));
@@ -520,7 +571,7 @@ function decodeOfferId(id: string): { req: SearchRequest; idx: number } | null {
     return null;
   }
   if (typeof k !== 'object' || k === null) return null;
-  const { o, d, dep, ret, a, c, i, cab, cur, idx } = k;
+  const { o, d, dep, ret, a, c, i, cab, cur, idx, n } = k;
   if (typeof o !== 'string' || !CODE3.test(o) || typeof d !== 'string' || !CODE3.test(d) || o === d) {
     return null;
   }
@@ -529,6 +580,7 @@ function decodeOfferId(id: string): { req: SearchRequest; idx: number } | null {
   if (typeof cab !== 'string' || !Object.hasOwn(CABIN_MULTIPLIER, cab)) return null;
   if (cur !== undefined && (typeof cur !== 'string' || !CODE3.test(cur))) return null;
   if (!isCount(idx, 0, OFFERS_PER_SEARCH - 1)) return null;
+  if (n !== undefined && (typeof n !== 'string' || !/^[A-Za-z0-9_-]{8}$/.test(n))) return null;
   return {
     req: {
       origin: o,
@@ -542,7 +594,12 @@ function decodeOfferId(id: string): { req: SearchRequest; idx: number } | null {
       currency: cur,
     },
     idx,
+    nonce: n,
   };
+}
+
+function isWideBody(segmentMinutes: number): boolean {
+  return segmentMinutes > WIDE_BODY_MINUTES;
 }
 
 // p1…pN in search order: adults, children, infants (the order every supplier returns them in).

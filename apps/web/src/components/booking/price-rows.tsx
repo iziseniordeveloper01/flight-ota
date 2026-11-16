@@ -15,12 +15,20 @@ export interface PriceRow {
 export function PriceRows({ rows, className }: { rows: PriceRow[]; className?: string }) {
   return (
     <dl className={cn('grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-sm', className)}>
-      {rows.map((r) => (
-        <div key={r.label} className={cn('contents', r.strong && 'text-base font-semibold')}>
-          <dt className={r.strong ? 'border-t pt-2' : 'text-muted-foreground'}>{r.label}</dt>
-          <dd className={cn('text-right tabular-nums', r.strong && 'border-t pt-2')}>{formatMoney(r.amount)}</dd>
-        </div>
-      ))}
+      {rows.map((r) =>
+        r.strong ? (
+          // One element spanning both columns carries the divider, so it isn't broken at the column gap.
+          <div key={r.label} className="col-span-2 mt-1 grid grid-cols-subgrid border-t pt-2 text-base font-semibold">
+            <dt>{r.label}</dt>
+            <dd className="text-right tabular-nums">{formatMoney(r.amount)}</dd>
+          </div>
+        ) : (
+          <div key={r.label} className="contents">
+            <dt className="text-muted-foreground">{r.label}</dt>
+            <dd className="text-right tabular-nums">{formatMoney(r.amount)}</dd>
+          </div>
+        ),
+      )}
     </dl>
   );
 }

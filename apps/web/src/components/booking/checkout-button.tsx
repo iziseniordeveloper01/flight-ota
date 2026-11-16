@@ -1,6 +1,7 @@
 'use client';
 
 import { Loader2 } from 'lucide-react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -12,11 +13,13 @@ import { cn } from '@/lib/utils';
 /**
  * "Checkout" on the trip summary: creates the booking through our BFF (which keeps the guest token
  * in an httpOnly cookie) and opens step 1. A price change at creation is shown there (?was=).
+ * The API re-shops the fare first; if it's gone (410) the customer gets "Search again" with the
+ * original search (`searchUrl`).
  */
-export function CheckoutButton({ offerId, className }: { offerId: string; className?: string }) {
+export function CheckoutButton({ offerId, searchUrl, className }: { offerId: string; searchUrl: string; className?: string }) {
   const router = useRouter();
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; searchAgain: boolean } | null>(null);
 
   async function checkout() {
     setPending(true);
@@ -29,11 +32,24 @@ export function CheckoutButton({ offerId, className }: { offerId: string; classN
     } catch (err) {
       setPending(false);
       if (err instanceof ApiError && err.kind === 'expired') {
-        router.refresh(); // the server page re-checks the offer and shows the expired state
+        setError({ message: messages.errors.fareGone, searchAgain: true });
         return;
       }
-      setError(err instanceof ApiError && err.kind !== 'validation' ? err.message : messages.trip.createFailed);
+      setError({ message: err instanceof ApiError && err.kind !== 'validation' ? err.message : messages.trip.createFailed, searchAgain: false });
     }
+  }
+
+  if (error?.searchAgain) {
+    return (
+      <div className={cn('flex flex-col gap-2', className)}>
+        <p role="alert" className="text-sm font-medium text-destructive">
+          {error.message}
+        </p>
+        <Button asChild size="lg" className="w-full">
+          <Link href={searchUrl}>{messages.trip.searchAgain}</Link>
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -44,7 +60,7 @@ export function CheckoutButton({ offerId, className }: { offerId: string; classN
       </Button>
       {error && (
         <p role="alert" className="text-sm font-medium text-destructive">
-          {error}
+          {error.message}
         </p>
       )}
     </div>

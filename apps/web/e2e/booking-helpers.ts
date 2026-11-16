@@ -105,7 +105,14 @@ export async function pickFirstSeat(page: Page, shot?: (name: string) => Promise
   await expect(seat).toBeVisible({ timeout: 60_000 });
   await seat.click();
   await expect(dialog.locator('button[data-status="selected"]')).toHaveCount(1);
-  if (shot) await shot('seat-map');
+  if (shot) {
+    // Let the seat's colour transition finish, or the shot catches it half-selected.
+    await dialog.locator('button[data-status="selected"]').evaluate((el) => Promise.all(el.getAnimations().map((a) => a.finished)));
+    await shot('seat-map');
+    // Scrolled into the cabin: the column letters stay pinned at the top.
+    await dialog.getByTestId('seat-map-scroll').evaluate((el) => el.scrollTo({ top: el.scrollHeight / 3 }));
+    await shot('seat-map-scrolled');
+  }
   await dialog.getByRole('button', { name: 'Done' }).click();
   await expect(dialog).toBeHidden();
 }

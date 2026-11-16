@@ -193,6 +193,7 @@ describe('DuffelAdapter error mapping', () => {
     [400, 'invalid_request_error', 'bad_request', 'INVALID_REQUEST'],
     [422, 'invalid_state_error', 'offer_no_longer_available', 'OFFER_EXPIRED'],
     [422, 'invalid_state_error', 'order_creation_already_attempted', 'OFFER_EXPIRED'],
+    [422, 'invalid_state_error', 'offer_request_already_booked', 'OFFER_EXPIRED'],
     [422, 'airline_error', 'price_changed', 'PRICE_CHANGED'],
     [422, 'validation_error', 'payment_amount_does_not_match_order_amount', 'PRICE_CHANGED'],
     [404, 'invalid_request_error', 'not_found', 'OFFER_NOT_FOUND'],

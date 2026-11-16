@@ -1,6 +1,7 @@
 import type { OfferPassenger, SeatMapRow } from '@ota/contracts';
 import {
   clearSeat,
+  findSeat,
   seatChoosers,
   seatPosition,
   seatStatus,
@@ -83,5 +84,13 @@ describe('seat selection rules', () => {
     expect(seatPosition(row, 0, 3)).toBe('aisle');
     expect(seatPosition(row, 1, 0)).toBe('aisle');
     expect(seatPosition(row, 1, 2)).toBe('window');
+  });
+
+  it('findSeat: designator + position of a selected service (works after a refresh)', () => {
+    const row: SeatMapRow = { number: 14, sections: [{ elements: [seat('14A', { a1: '0.00' }), seat('14C', { a1: '20.00', a2: '20.00' })] }, { elements: [seat('14D', { a1: '0.00' })] }] };
+    const map = { segmentRef: SEG, cabins: [{ deck: 0, rows: [row] }] };
+    expect(findSeat(map, '14C-a2')).toEqual({ designator: '14C', position: 'aisle' });
+    expect(findSeat(map, '14A-a1')).toEqual({ designator: '14A', position: 'window' });
+    expect(findSeat(map, 'nope')).toBeNull();
   });
 });

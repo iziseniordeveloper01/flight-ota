@@ -58,6 +58,16 @@ describe('SeatGrid', () => {
     expect(screen.getByRole('button', { name: /^Seat 14A.*available$/ })).toHaveAttribute('aria-pressed', 'false');
   });
 
+  it('paid seats are tinted, never badged with "$"; the front of the aircraft is labelled', () => {
+    render(<Harness passenger={adult1} />);
+    const paid = screen.getByRole('button', { name: /^Seat 14C/ });
+    expect(paid).toHaveAttribute('data-status', 'paid');
+    expect(paid).toHaveTextContent(/^C$/);
+    expect(paid.className).toContain('bg-seat-paid');
+    expect(screen.getByTestId('seat-front')).toHaveTextContent('▲ Front of aircraft');
+    expect(screen.getByTestId('seat-row-14').firstElementChild).toHaveTextContent('14'); // number on the left
+  });
+
   it("another passenger's seat is shown as taken and disabled", () => {
     const initial: SeatSelection = { seg1: { a1: { serviceId: '14C-a1', label: 'Seat 14C', price: usd('20.00') } } };
     render(<Harness passenger={adult2} initial={initial} />);

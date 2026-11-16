@@ -3,9 +3,15 @@ import { SupplierError, type SupplierErrorCode } from '../errors.js';
 import type { ApiResponseError } from './duffel.types.js';
 
 // Duffel error codes meaning "this offer can no longer be booked/priced".
-// order_creation_already_attempted: another order was already tried for an offer from the same
-// search (e.g. a second booking of the same offer) — a fresh search is needed.
-const EXPIRED_CODES = new Set(['offer_no_longer_available', 'offer_expired', 'order_creation_already_attempted']);
+// offer_request_already_booked / order_creation_already_attempted: Duffel allows ONE order per offer
+// request (search); another order was already made or tried for an offer from the same search (e.g. a
+// second booking of the same offer). The API re-shops at checkout so this is rare — a fresh search is needed.
+const EXPIRED_CODES = new Set([
+  'offer_no_longer_available',
+  'offer_expired',
+  'offer_request_already_booked',
+  'order_creation_already_attempted',
+]);
 // The amount we'd pay no longer matches what the airline charges.
 const PRICE_CHANGED_CODES = new Set(['price_changed', 'payment_amount_does_not_match_order_amount']);
 

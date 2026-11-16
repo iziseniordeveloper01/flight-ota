@@ -31,6 +31,8 @@ Turborepo + pnpm 10 workspaces, Node 24, ESM everywhere. Package-specific rules 
 - `FlightOffer.supplierRef` is server-only booking context; strip it (`toPublicOffer`) before any response.
 - `FlightOffer.passengers[].ref` / `Segment.ref` are opaque supplier ids, safe to return: bags, seats and
   orders refer to passengers and flights by them.
+- Suppliers allow ONE order per search (Duffel offer request, TBO TraceId). Never book the cached offer that
+  every viewer of a search shares: `POST /bookings` re-shops (fresh search, same `offerFingerprint()`).
 
 ## Bookings (guest checkout) — details in `apps/api/AGENTS.md`
 - State machine: DRAFT → PENDING_PAYMENT → CONFIRMING → CONFIRMED (→ CANCELLED later); CONFIRMING → FAILED;

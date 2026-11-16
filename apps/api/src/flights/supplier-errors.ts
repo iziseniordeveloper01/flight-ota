@@ -7,9 +7,19 @@ import {
   type Logger,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import type { BookingErrorBody } from '@ota/contracts';
 import { SupplierError } from '@ota/suppliers';
 
-export const GONE_MESSAGE = 'This offer has expired or is no longer available. Please search again.';
+export const FARE_GONE_MESSAGE = 'This fare is no longer available. Please search again.';
+
+/**
+ * 410 FARE_NO_LONGER_AVAILABLE: the fare can't be priced or booked any more (expired, sold out, not
+ * in a fresh search, or the supplier's offer request was already booked). The customer must search again.
+ */
+export function fareNoLongerAvailable(): GoneException {
+  const body: BookingErrorBody = { statusCode: 410, code: 'FARE_NO_LONGER_AVAILABLE', message: FARE_GONE_MESSAGE };
+  return new GoneException(body);
+}
 
 /**
  * Runs a supplier call and turns SupplierError into the matching HTTP error (logged without
@@ -38,7 +48,7 @@ export function supplierHttpException(err: SupplierError): HttpException {
       return new BadRequestException('The flight supplier rejected this request');
     case 'OFFER_NOT_FOUND':
     case 'OFFER_EXPIRED':
-      return new GoneException(GONE_MESSAGE);
+      return fareNoLongerAvailable();
     case 'PRICE_CHANGED':
       return new UnprocessableEntityException({
         statusCode: 422,

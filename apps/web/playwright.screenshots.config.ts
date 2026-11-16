@@ -16,6 +16,11 @@ export default defineConfig({
       name: 'mobile',
       use: { browserName: 'chromium', viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true },
     },
+    {
+      // The narrowest phone we support.
+      name: 'mobile-360',
+      use: { browserName: 'chromium', viewport: { width: 360, height: 780 }, isMobile: true, hasTouch: true },
+    },
     { name: 'desktop', use: { browserName: 'chromium', viewport: { width: 1280, height: 800 } } },
   ],
 });

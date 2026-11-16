@@ -11,7 +11,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useIsDesktop } from '@/hooks/use-media-query';
 import { messages } from '@/lib/messages';
 import { formatMoney } from '@/lib/money-format';
-import { clearSeat, isFree, seatChoosers, toggleSeat, type SeatSelection } from '@/lib/seat-selection';
+import { clearSeat, findSeat, isFree, seatChoosers, toggleSeat, type SeatSelection } from '@/lib/seat-selection';
 import { cn } from '@/lib/utils';
 import { SeatGrid, SeatLegend } from './seat-grid';
 
@@ -69,6 +69,8 @@ function SeatPicker({ segments, initialSegmentRef, passengers, labels, maps, loa
   const [passengerRef, setPassengerRef] = useState(choosers[0]?.ref);
   const passenger = choosers.find((p) => p.ref === passengerRef) ?? choosers[0];
   const current = selection[segmentRef ?? '']?.[passenger?.ref ?? ''];
+  const currentMap = maps?.find((m) => m.segmentRef === segmentRef);
+  const currentSeat = current && currentMap ? findSeat(currentMap, current.serviceId) : null;
 
   let content: ReactNode;
   if (loading) {
@@ -120,12 +122,13 @@ function SeatPicker({ segments, initialSegmentRef, passengers, labels, maps, loa
           {hasInfants && <p className="text-xs text-muted-foreground">{messages.seats.infantNote}</p>}
           <SeatLegend />
         </div>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {/* A bounded flex column: the seat grid scrolls inside it (both axes, sticky labels). */}
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-2 pt-3 pb-1 md:p-4 md:pb-2">
           {content ??
             segments.map((s) => {
               const map = maps?.find((m) => m.segmentRef === s.ref);
               return (
-                <TabsContent key={s.ref} value={s.ref} className="mt-0">
+                <TabsContent key={s.ref} value={s.ref} className="mt-0 flex min-h-0 flex-col">
                   {!map || !passenger ? (
                     <p className="py-8 text-center text-sm text-muted-foreground">{messages.seats.noMap}</p>
                   ) : (
@@ -136,13 +139,18 @@ function SeatPicker({ segments, initialSegmentRef, passengers, labels, maps, loa
             })}
         </div>
       </Tabs>
-      <div className="flex items-center gap-3 border-t p-4">
-        <p aria-live="polite" className="min-w-0 flex-1 text-sm font-medium">
+      <div className="flex items-center gap-2 border-t p-4 md:gap-3">
+        <p aria-live="polite" data-testid="seat-footer" className="min-w-0 flex-1 text-sm font-medium">
           {passenger &&
             messages.seats.footer(
               labels.get(passenger.ref) ?? '',
-              current?.label ?? null,
-              current ? (isFree(current.price) ? messages.seats.free : formatMoney(current.price)) : null,
+              current
+                ? {
+                    label: current.label,
+                    position: currentSeat ? messages.seats.positionTitle[currentSeat.position] : null,
+                    price: isFree(current.price) ? messages.seats.free : formatMoney(current.price),
+                  }
+                : null,
             )}
         </p>
         {current && segmentRef && passenger && (

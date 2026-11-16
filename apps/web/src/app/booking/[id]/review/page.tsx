@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import { redirect } from 'next/navigation';
 import { BookingStepper } from '@/components/booking/booking-stepper';
-import { BookingSummary, DemoNote } from '@/components/booking/booking-summary';
+import { BookingSummary } from '@/components/booking/booking-summary';
 import { ConfirmPanel } from '@/components/booking/confirm-panel';
 import { stepPathFor } from '@/lib/booking-steps';
 import { messages } from '@/lib/messages';
@@ -22,11 +22,6 @@ export default async function ReviewPage({ params }: PageProps<'/booking/[id]/re
       <p className="text-sm text-muted-foreground">
         {messages.booking.reference}: <span className="font-semibold text-foreground">{booking.reference}</span>
       </p>
-      {booking.demo && (
-        <div className="mt-3">
-          <DemoNote>{messages.booking.demoNote}</DemoNote>
-        </div>
-      )}
       <div className="mt-4 flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start lg:gap-6">
         <BookingSummary booking={booking} />
         <div className="lg:sticky lg:top-4">

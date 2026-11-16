@@ -7,6 +7,7 @@ import { countryName } from '@/lib/countries';
 import { formatLocalDate } from '@/lib/local-time';
 import { messages } from '@/lib/messages';
 import { formatMoney } from '@/lib/money-format';
+import { cn } from '@/lib/utils';
 import { breakdownRows, PriceRows } from './price-rows';
 import { TripDetails } from './trip-details';
 
@@ -21,10 +22,16 @@ function Card({ id, title, children }: { id: string; title: string; children: Re
   );
 }
 
-export function DemoNote({ children }: { children: ReactNode }) {
+export function DemoNote({ children, compact = false }: { children: ReactNode; compact?: boolean }) {
   return (
-    <p role="note" className="flex items-start gap-2 rounded-lg bg-warning px-3 py-2 text-sm font-medium text-warning-foreground">
-      <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+    <p
+      role="note"
+      className={cn(
+        'flex gap-2 rounded-lg bg-warning text-warning-foreground',
+        compact ? 'items-center px-3 py-1.5 text-xs font-medium' : 'items-start px-3 py-2 text-sm font-medium',
+      )}
+    >
+      <Info aria-hidden className={cn('shrink-0', compact ? 'size-3.5' : 'mt-0.5 size-4')} />
       {children}
     </p>
   );

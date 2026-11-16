@@ -4,6 +4,7 @@ import {
   type Money,
   type OfferPassenger,
   type PublicBookingAncillary,
+  type SeatMap,
   type SeatMapElement,
   type SeatMapRow,
   type SeatService,
@@ -94,8 +95,24 @@ export function selectionFromBooking(ancillaries: PublicBookingAncillary[]): Sea
   return selection;
 }
 
+export type SeatPosition = 'window' | 'aisle' | 'middle';
+
+/** The seat a selected service belongs to (also after a refresh, when only the service id is known). */
+export function findSeat(map: SeatMap, serviceId: string): { designator: string; position: SeatPosition } | null {
+  for (const row of map.cabins.flatMap((c) => c.rows)) {
+    for (const [si, section] of row.sections.entries()) {
+      for (const [ei, el] of section.elements.entries()) {
+        if (el.type === 'seat' && el.services.some((s) => s.serviceId === serviceId)) {
+          return { designator: el.designator, position: seatPosition(row, si, ei) };
+        }
+      }
+    }
+  }
+  return null;
+}
+
 /** Window = outer seat of the outer sections; aisle = a seat next to the gap between sections. */
-export function seatPosition(row: SeatMapRow, sectionIndex: number, elementIndex: number): 'window' | 'aisle' | 'middle' {
+export function seatPosition(row: SeatMapRow, sectionIndex: number, elementIndex: number): SeatPosition {
   const seatIndexes = row.sections[sectionIndex].elements.flatMap((e, i) => (e.type === 'seat' ? [i] : []));
   const first = seatIndexes[0];
   const last = seatIndexes[seatIndexes.length - 1];

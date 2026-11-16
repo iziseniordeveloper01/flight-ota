@@ -32,6 +32,9 @@ export const messages = {
   },
   footer: {
     note: 'Demo project. Prices and flights shown in demo mode are test data.',
+    legal: 'Legal',
+    terms: 'Terms and Conditions',
+    privacy: 'Privacy Policy',
     rights: (year: number, brand: string) => `© ${year} ${brand}`,
   },
   search: {
@@ -127,6 +130,8 @@ export const messages = {
     notFound: 'We could not find what you were looking for.',
     validation: 'Some search details are not valid.',
     expired: 'This fare has expired',
+    /** API code FARE_NO_LONGER_AVAILABLE (re-shop found no match, or the supplier's offer request was booked). */
+    fareGone: 'This fare is no longer available. Please search again.',
   },
   sort: {
     label: 'Sort flights',
@@ -236,6 +241,8 @@ export const messages = {
     title: 'Your booking',
     reference: 'Booking reference',
     demoNote: 'Demo mode — test inventory. Bookings are made in the airline sandbox; no real ticket is issued and nothing is charged.',
+    /** One line on step 1 (the full note is on the trip summary and next to Confirm). */
+    demoShort: 'Demo booking — no charge, no real ticket.',
     timeLeft: (time: string) => `Complete your booking within ${time}`,
     timeLeftLabel: 'Time left to complete this booking',
     expiredTitle: 'This fare has expired',
@@ -349,20 +356,23 @@ export const messages = {
     loadFailed: 'We could not load the seat map.',
     legend: 'Legend',
     free: 'Free',
-    paid: 'Paid',
+    paid: 'Paid seat',
     unavailable: 'Unavailable',
+    front: 'Front of aircraft',
     selected: 'Your selection',
     takenByOther: 'Another passenger in your booking',
     exit: 'Exit',
     deck: (n: number) => (n === 0 ? 'Main deck' : 'Upper deck'),
     facility: { lavatory: 'Toilet', galley: 'Galley', closet: 'Closet', stairs: 'Stairs', bassinet: 'Bassinet' },
     position: { window: 'window', aisle: 'aisle', middle: 'middle' },
+    positionTitle: { window: 'Window', aisle: 'Aisle', middle: 'Middle' },
     priceFree: 'free',
     status: { available: 'available', unavailable: 'unavailable', selected: 'selected', taken: 'taken by another passenger' },
     seatAria: (designator: string, position: string, price: string | null, status: string) =>
       [`Seat ${designator}`, position, price, status].filter(Boolean).join(', '),
-    footer: (passenger: string, seat: string | null, price: string | null) =>
-      seat ? `${passenger}: ${seat}${price ? ` · ${price}` : ''}` : `${passenger}: no seat selected`,
+    /** "Seat 14C · Window · $20.00 · Adult 1" (position unknown → left out). */
+    footer: (passenger: string, seat: { label: string; position: string | null; price: string } | null) =>
+      seat ? [seat.label, seat.position, seat.price, passenger].filter(Boolean).join(' · ') : `${passenger}: no seat selected`,
     clear: 'Remove seat',
     done: 'Done',
     infantNote: 'Infants sit on an adult’s lap and do not need a seat.',
@@ -383,6 +393,8 @@ export const messages = {
       'Payment is not enabled in this demo. Confirming creates a test booking with the airline sandbox — no money is charged and no real ticket is issued.',
     agree: 'I agree to the',
     terms: 'Terms and Conditions',
+    and: 'and the',
+    privacy: 'Privacy Policy',
     agreeRequired: 'Please accept the Terms and Conditions to continue',
     confirm: 'Confirm booking (demo)',
     confirming: 'Confirming with the airline…',
@@ -396,16 +408,20 @@ export const messages = {
     newSearch: 'Start a new search',
     edit: 'Edit details',
   },
+  legal: {
+    termsTitle: 'Terms and Conditions',
+    privacyTitle: 'Privacy Policy',
+    placeholder: (doc: string, brand: string) => `${doc} — to be provided by ${brand}.`,
+    back: 'Back to home',
+  },
   complete: {
     title: 'Booking confirmed',
-    subtitle: 'Your booking is confirmed. Keep these references for your trip.',
+    saveReferences: 'Save these references — you’ll need them to manage your booking.',
     pnr: 'Airline booking reference (PNR)',
     reference: 'Our booking reference',
     demo: 'Test booking — no real ticket issued.',
     policy: 'Insurance policy number',
-    totalPaid: 'Total paid (demo)',
     print: 'Print',
     bookAnother: 'Book another flight',
-    sentTo: (email: string) => `Confirmation details for ${email}`,
   },
 } as const;
