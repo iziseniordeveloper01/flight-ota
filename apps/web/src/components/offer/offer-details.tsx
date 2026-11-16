@@ -3,12 +3,14 @@
 import type { PublicFlightOffer, PublicPricedOffer } from '@ota/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, CheckCircle2 } from 'lucide-react';
+import Link from 'next/link';
 import { ResponsiveDialog } from '@/components/responsive-overlay';
 import { ErrorState } from '@/components/results/result-states';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ApiError, api } from '@/lib/api';
+import { tripSummaryPath } from '@/lib/booking-steps';
 import { formatLocalDate } from '@/lib/local-time';
 import { messages } from '@/lib/messages';
 import { formatMoney } from '@/lib/money-format';
@@ -33,14 +35,11 @@ export function OfferDetailsSheet({ offer, travellers, onClose, onRefreshSearch 
       onOpenChange={(open) => !open && onClose()}
       title={messages.details.title}
       footer={
-        <div className="flex flex-col gap-1">
-          <Button size="lg" className="w-full" disabled aria-describedby="booking-soon">
-            {messages.details.continue}
+        offer && (
+          <Button asChild size="lg" className="w-full">
+            <Link href={tripSummaryPath(offer.id)}>{messages.details.continue}</Link>
           </Button>
-          <p id="booking-soon" className="text-center text-sm text-muted-foreground">
-            {messages.details.comingSoon}
-          </p>
-        </div>
+        )
       }
     >
       {/* key: a different offer gets a fresh query/state. */}

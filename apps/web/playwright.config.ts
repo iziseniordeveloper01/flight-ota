@@ -56,6 +56,8 @@ export default defineConfig({
       env: {
         NEXT_DIST_DIR: '.next-e2e',
         NEXT_PUBLIC_API_URL: `http://localhost:${API_PORT}/v1`,
+        // The booking BFF accepts POST/PUT only from its own origin (CSRF check).
+        WEB_ORIGIN: `http://localhost:${WEB_PORT}`,
       },
       reuseExistingServer: false,
       timeout: 300_000,

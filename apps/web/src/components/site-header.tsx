@@ -4,7 +4,7 @@ import { env } from '@/env';
 
 export function SiteHeader() {
   return (
-    <header className="border-b bg-card">
+    <header className="border-b bg-card print:hidden">
       <div className="mx-auto flex h-14 max-w-6xl items-center px-4">
         <Link
           href="/"

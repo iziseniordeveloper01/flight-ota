@@ -218,6 +218,51 @@ describe('Bookings (e2e)', () => {
     expect(res.body.code).toBe('DOCUMENT_REQUIRED');
   });
 
+  it.each([
+    ['domestic DEL→BOM', 'BOM', false],
+    ['international DEL→DXB', 'DXB', true],
+  ])('%s: passport requirement resolved by the server, airports + trip in the view', async (_name, destination, international) => {
+    const offer = await firstOffer({ origin: 'DEL', destination, departureDate: daysAhead(33) });
+    const { id, token, res } = await createBooking(offer);
+    const booking = res.body.data as PublicBooking;
+    expect(booking.trip).toEqual({ international });
+    expect(booking.airports.DEL).toMatchObject({ countryCode: 'IN', name: expect.any(String) });
+    expect(booking.airports[destination]?.countryCode).toBe(international ? 'AE' : 'IN');
+    // The mock supplier says null ("don't know"): the API decides and never passes null on.
+    const anc = await as(token).get(`/v1/bookings/${id}/ancillaries`).expect(200);
+    expect(anc.body.data.passengerRequirements.identityDocumentRequired).toBe(international);
+    const get = await as(token).get(`/v1/bookings/${id}`).expect(200);
+    expect(get.body.data.trip).toEqual({ international });
+  });
+
+  it('document { keepExisting: true } keeps the stored passport (masked in responses, original in the order)', async () => {
+    const offer = await firstOffer({ origin: 'SIN', destination: 'NRT', departureDate: daysAhead(34) });
+    const { id, token } = await createBooking(offer);
+    await as(token).put(`/v1/bookings/${id}/details`, details(offer)).expect(200);
+    const body = details(offer);
+    body.passengers[0].document = { keepExisting: true };
+    body.passengers[0].givenName = 'Changed';
+    const put = await as(token).put(`/v1/bookings/${id}/details`, body).expect(200);
+    const pax = (put.body.data as PublicBooking).passengers[0];
+    expect(pax).toMatchObject({ givenName: 'Changed', document: { numberMasked: '*****543', issuingCountry: 'GB', expiryDate: '2035-01-01' } });
+    expectNoSecrets(put.body);
+
+    await as(token).post(`/v1/bookings/${id}/checkout`).expect(200);
+    const spy = vi.spyOn(mock, 'createOrder');
+    await as(token).post(`/v1/bookings/${id}/confirm-demo`, 'keep-doc-key-1').expect(200);
+    expect(spy.mock.calls[0][0].passengers[0].document).toEqual({ type: 'passport', number: PASSPORT, issuingCountry: 'GB', expiryDate: '2035-01-01' });
+  });
+
+  it('document { keepExisting: true } without a stored passport → 422 DOCUMENT_REQUIRED (once)', async () => {
+    const offer = await firstOffer({ origin: 'SIN', destination: 'NRT', departureDate: daysAhead(35) });
+    const { id, token } = await createBooking(offer);
+    const body = details(offer);
+    body.passengers[0].document = { keepExisting: true };
+    const res = await as(token).put(`/v1/bookings/${id}/details`, body).expect(422);
+    expect(res.body.code).toBe('DOCUMENT_REQUIRED');
+    expect(res.body.issues).toEqual([expect.objectContaining({ code: 'DOCUMENT_REQUIRED', path: 'passengers.0.document' })]);
+  });
+
   it('missing, wrong or malformed token / id → 404', async () => {
     const offer = await firstOffer({ origin: 'SIN', destination: 'NRT', departureDate: daysAhead(30) });
     const { id } = await createBooking(offer);

@@ -1,13 +1,16 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { BadGatewayException, GoneException, HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
-import type {
-  BookingErrorCode,
-  BookingIssue,
-  BookingWarning,
-  InsuranceQuote,
-  PublicBooking,
-  PublicFlightOffer,
-  UpdateBookingDetailsBody,
+import {
+  lastFlightDate,
+  type BookingAirport,
+  type BookingErrorCode,
+  type BookingIssue,
+  type BookingWarning,
+  type InsuranceQuote,
+  type PublicAncillaries,
+  type PublicBooking,
+  type PublicFlightOffer,
+  type UpdateBookingDetailsBody,
 } from '@ota/contracts';
 import type { AncillaryType, BookingStatus, Prisma } from '@ota/db';
 import {
@@ -39,9 +42,11 @@ import {
   bookingTotals,
   buildCatalogue,
   checkPassengers,
-  lastFlightDate,
+  isInternationalTrip,
+  itineraryAirports,
   priceServices,
   type CatalogueEntry,
+  type RulesPassenger,
 } from './booking-rules.js';
 import { EXPIRABLE, IllegalTransitionError } from './booking-state.js';
 import { BOOKING_DETAILS, BookingStore, isUniqueViolation, TX_OPTIONS, type BookingWithDetails, type Tx } from './booking-store.service.js';
@@ -149,10 +154,17 @@ export class BookingsService {
     return this.view(booking);
   }
 
-  async ancillaries(id: string, token: string | undefined): Promise<Ancillaries> {
+  async ancillaries(id: string, token: string | undefined): Promise<PublicAncillaries> {
     const booking = await this.load(id, token);
     this.requireStatus(booking, 'DRAFT', 'PENDING_PAYMENT');
-    return this.fetchAncillaries(booking);
+    const ancillaries = await this.fetchAncillaries(booking);
+    return {
+      ...ancillaries,
+      passengerRequirements: {
+        ...ancillaries.passengerRequirements,
+        identityDocumentRequired: await this.documentRequired(booking, ancillaries),
+      },
+    };
   }
 
   async seatMaps(id: string, token: string | undefined): Promise<SeatMap[]> {
@@ -178,22 +190,21 @@ export class BookingsService {
     const bagIds = new Set(ancillaries.bags.map((b) => b.serviceId));
     const seatMaps = body.services.some((s) => !bagIds.has(s.serviceId)) ? await this.fetchSeatMaps(booking) : null;
 
-    const requirements = ancillaries.passengerRequirements;
-    const documentRequired =
-      requirements.identityDocumentRequired ??
-      (await this.store.isInternational(offer.slices.flatMap((s) => s.segments.flatMap((x) => [x.origin, x.destination]))));
-    const { issues, warnings } = checkPassengers(body.passengers, {
+    const kept = keepStoredDocuments(body.passengers, booking);
+    const { issues, warnings } = checkPassengers(kept.passengers, {
       slots: offer.passengers,
       lastFlightDate: lastFlightDate(offer),
-      documentRequired,
-      maxNameLength: requirements.maxNameLength,
+      documentRequired: await this.documentRequired(booking, ancillaries),
+      maxNameLength: ancillaries.passengerRequirements.maxNameLength,
     });
     const priced = priceServices(
       body.services,
       buildCatalogue(ancillaries, seatMaps),
       new Set(offer.passengers.map((p) => p.ref)),
     );
-    const allIssues: BookingIssue[] = [...issues, ...priced.issues];
+    // A missing stored passport is reported once (checkPassengers may flag the same path).
+    const ruleIssues = issues.filter((i) => !kept.issues.some((k) => k.path === i.path));
+    const allIssues: BookingIssue[] = [...kept.issues, ...ruleIssues, ...priced.issues];
 
     const fare = toMoney(booking.fareAmount, booking.currency);
     let quote: InsuranceQuote | undefined;
@@ -212,7 +223,7 @@ export class BookingsService {
       await tx.bookingAncillary.deleteMany({ where: { bookingId: id } });
       await tx.bookingPassenger.deleteMany({ where: { bookingId: id } });
 
-      const idByRef = await this.insertPassengers(tx, id, offer.passengers, body.passengers);
+      const idByRef = await this.insertPassengers(tx, id, offer.passengers, kept.passengers);
       await tx.bookingAncillary.createMany({
         data: [
           ...priced.lines.map((line) => ({
@@ -267,7 +278,7 @@ export class BookingsService {
     tx: Tx,
     bookingId: string,
     slots: OfferPassenger[],
-    passengers: UpdateBookingDetailsBody['passengers'],
+    passengers: ResolvedPassenger[],
   ): Promise<Map<string, string>> {
     const byRef = new Map(passengers.map((p) => [p.ref, p]));
     const position = new Map(slots.map((s, i) => [s.ref, i]));
@@ -287,7 +298,12 @@ export class BookingsService {
           dateOfBirthEnc: this.crypto.encrypt(p.dateOfBirth),
           nationality: p.nationality,
           documentType: p.document ? 'PASSPORT' : null,
-          documentNumberEnc: p.document ? this.crypto.encrypt(p.document.number) : null,
+          // A kept document is already encrypted: it is copied, never decrypted here.
+          documentNumberEnc: p.document
+            ? 'numberEnc' in p.document
+              ? p.document.numberEnc
+              : this.crypto.encrypt(p.document.number)
+            : null,
           documentIssuingCountry: p.document?.issuingCountry ?? null,
           documentExpiryDate: p.document ? new Date(`${p.document.expiryDate}T00:00:00Z`) : null,
           infantAssociatedAdultId: p.associatedAdultRef ? (idByRef.get(p.associatedAdultRef) ?? null) : null,
@@ -679,11 +695,66 @@ export class BookingsService {
     }
   }
 
+  /** Airports on the itinerary (display data) + whether the trip crosses a border. */
+  private async trip(booking: BookingWithDetails): Promise<{ airports: Record<string, BookingAirport>; international: boolean }> {
+    const codes = itineraryAirports(offerOf(booking));
+    const rows = await this.store.airports(codes);
+    return {
+      airports: Object.fromEntries(rows.map(({ iataCode, ...a }) => [iataCode, a])),
+      international: isInternationalTrip(codes, rows),
+    };
+  }
+
+  /** The supplier's answer when it gives one; otherwise passports are required on international trips. */
+  private async documentRequired(booking: BookingWithDetails, ancillaries: Ancillaries): Promise<boolean> {
+    return ancillaries.passengerRequirements.identityDocumentRequired ?? (await this.trip(booking)).international;
+  }
+
   private async view(booking: BookingWithDetails): Promise<PublicBooking> {
     const offer = offerOf(booking);
-    const quotes = await this.insurance.quote({ fare: toMoney(booking.fareAmount, booking.currency) }, offer.passengers);
-    return toPublicBooking(booking, { decrypt: (v) => this.crypto.decrypt(v), quotes });
+    const [quotes, trip] = await Promise.all([
+      this.insurance.quote({ fare: toMoney(booking.fareAmount, booking.currency) }, offer.passengers),
+      this.trip(booking),
+    ]);
+    return toPublicBooking(booking, { decrypt: (v) => this.crypto.decrypt(v), quotes, ...trip });
   }
+}
+
+type StoredDocument = { type: 'passport'; numberEnc: string; issuingCountry: string; expiryDate: string };
+type NewDocument = { type: 'passport'; number: string; issuingCountry: string; expiryDate: string };
+type ResolvedPassenger = RulesPassenger & { document?: StoredDocument | NewDocument | null };
+
+/**
+ * `document: { keepExisting: true }` → the passport already stored for that passenger slot (still
+ * encrypted). No stored passport → DOCUMENT_REQUIRED at that passenger's document.
+ */
+function keepStoredDocuments(
+  passengers: UpdateBookingDetailsBody['passengers'],
+  booking: BookingWithDetails,
+): { passengers: ResolvedPassenger[]; issues: BookingIssue[] } {
+  const issues: BookingIssue[] = [];
+  const resolved = passengers.map((p, i): ResolvedPassenger => {
+    if (!p.document || !('keepExisting' in p.document)) return p as ResolvedPassenger;
+    const stored = booking.passengers.find((s) => s.supplierPassengerId === p.ref);
+    if (!stored?.documentNumberEnc || !stored.documentIssuingCountry || !stored.documentExpiryDate) {
+      issues.push({
+        code: 'DOCUMENT_REQUIRED',
+        path: `passengers.${i}.document`,
+        message: 'There is no saved passport to keep. Please enter the passport details.',
+      });
+      return { ...p, document: null };
+    }
+    return {
+      ...p,
+      document: {
+        type: 'passport',
+        numberEnc: stored.documentNumberEnc,
+        issuingCountry: stored.documentIssuingCountry,
+        expiryDate: stored.documentExpiryDate.toISOString().slice(0, 10),
+      },
+    };
+  });
+  return { passengers: resolved, issues };
 }
 
 function snapshotOf(offer: PricedOffer): Prisma.InputJsonValue {

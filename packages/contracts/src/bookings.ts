@@ -41,6 +41,14 @@ export function passengerTypeForAge(age: number): PassengerType {
   return age < 2 ? 'infant' : age < 12 ? 'child' : 'adult';
 }
 
+/** Local date (YYYY-MM-DD) of the last flight's departure: the day airlines apply age rules. */
+export function lastFlightDate(offer: Pick<PublicFlightOffer, 'slices'>): string {
+  const lastSlice = offer.slices[offer.slices.length - 1];
+  const lastSegment = lastSlice.segments[lastSlice.segments.length - 1];
+  // Airport-local "YYYY-MM-DDTHH:mm:ss": the date is just the first 10 chars (no Date parsing).
+  return lastSegment.departureAt.slice(0, 10);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Request schemas
 
@@ -86,6 +94,12 @@ const passportSchema = z.object({
   expiryDate: isoDate,
 });
 
+/**
+ * Re-saving details without re-typing the passport: keeps the document already stored for this
+ * passenger (the client only ever sees it masked). 422 DOCUMENT_REQUIRED when none is stored.
+ */
+export const keepDocumentSchema = z.object({ keepExisting: z.literal(true) });
+
 const passengerRef = z.string().min(1).max(64);
 
 export const passengerDetailsSchema = z
@@ -101,7 +115,7 @@ export const passengerDetailsSchema = z
     noFamilyName: z.boolean().default(false),
     dateOfBirth: isoDate,
     nationality: countryCode,
-    document: passportSchema.nullish(),
+    document: z.union([passportSchema, keepDocumentSchema]).nullish(),
     /** Infants only: ref of the adult they travel with. */
     associatedAdultRef: passengerRef.nullish(),
   })
@@ -216,6 +230,14 @@ export interface InsuranceQuote {
   demo: boolean;
 }
 
+/** Display data for an airport on the booking's itinerary. */
+export interface BookingAirport {
+  name: string;
+  city: string | null;
+  /** ISO 3166-1 alpha-2 */
+  countryCode: string;
+}
+
 export interface PublicBooking {
   id: string;
   /** What the customer quotes, e.g. "K7MX2QPA". */
@@ -226,6 +248,12 @@ export interface PublicBooking {
   demo: boolean;
   /** The offer as priced at the last re-price (draft creation or checkout). */
   offer: PublicFlightOffer;
+  /** Every airport in `offer` we know, by IATA code (unknown codes are absent). */
+  airports: Record<string, BookingAirport>;
+  trip: {
+    /** More than one country, or an airport we don't know (the safe side: passports are asked). */
+    international: boolean;
+  };
   /** Offer expiry: the booking must be confirmed before this (ISO 8601). */
   expiresAt: string;
   price: BookingPrice;
@@ -311,9 +339,17 @@ export interface UpdateBookingDetailsResponse {
   meta: { warnings: BookingWarning[] };
 }
 
+/**
+ * Ancillaries as the API serves them: `identityDocumentRequired` is already DECIDED by the server
+ * (the supplier's answer, or the international-trip rule when the supplier gives none).
+ */
+export type PublicAncillaries = Omit<Ancillaries, 'passengerRequirements'> & {
+  passengerRequirements: { identityDocumentRequired: boolean; maxNameLength: number | null };
+};
+
 /** GET /v1/bookings/:id/ancillaries */
 export interface AncillariesResponse {
-  data: Ancillaries;
+  data: PublicAncillaries;
 }
 
 /** GET /v1/bookings/:id/seat-maps */

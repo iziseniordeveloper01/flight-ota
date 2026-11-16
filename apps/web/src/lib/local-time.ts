@@ -49,9 +49,10 @@ const dateFormats = {
   short: { day: 'numeric', month: 'short', timeZone: 'UTC' },
   weekday: { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' },
   dow: { weekday: 'short', timeZone: 'UTC' },
+  full: { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' },
 } satisfies Record<string, Intl.DateTimeFormatOptions>;
 
-/** "2026-12-15T06:05:00" or "2026-12-15" → "15 Dec" / "Tue, 15 Dec" / "Tue". */
+/** "2026-12-15T06:05:00" or "2026-12-15" → "15 Dec" / "Tue, 15 Dec" / "Tue" / "15 Dec 2026". */
 export function formatLocalDate(local: string, style: keyof typeof dateFormats = 'short'): string {
   return new Intl.DateTimeFormat(LOCALE, dateFormats[style]).format(utcDay(parse(local)));
 }

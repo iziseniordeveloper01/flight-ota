@@ -5,14 +5,16 @@ import {
   bookingTotals,
   buildCatalogue,
   checkPassengers,
-  lastFlightDate,
+  isInternationalTrip,
+  itineraryAirports,
   priceServices,
   type PassengerRulesContext,
+  type RulesPassenger,
 } from './booking-rules.js';
 
 const usd = (amount: string) => ({ amount, currency: 'USD' });
 
-const person = (ref: string, type: PassengerDetails['type'], dateOfBirth: string, extra: Partial<PassengerDetails> = {}): PassengerDetails => ({
+const person = (ref: string, type: PassengerDetails['type'], dateOfBirth: string, extra: Partial<RulesPassenger> = {}): RulesPassenger => ({
   ref, type, title: 'mr', gender: 'm', givenName: 'Alex', familyName: 'Doe', noFamilyName: false,
   dateOfBirth, nationality: 'GB', document: null, associatedAdultRef: type === 'infant' ? 'p1' : null, ...extra,
 });
@@ -26,12 +28,26 @@ const ctx: PassengerRulesContext = {
 const family = [person('p1', 'adult', '1990-01-01'), person('p2', 'child', '2018-01-01'), person('p3', 'infant', '2026-01-01')];
 const codes = (r: { issues: Array<{ code: string; path: string }> }) => r.issues.map((i) => `${i.code}@${i.path}`);
 
-describe('lastFlightDate / addMonths', () => {
-  it('uses the last segment of the last slice', () => {
-    const seg = (departureAt: string) => ({ departureAt }) as never;
-    expect(lastFlightDate({ slices: [{ segments: [seg('2026-12-14T10:00:00')] }, { segments: [seg('2026-12-21T23:00:00'), seg('2026-12-22T07:00:00')] }] } as never)).toBe('2026-12-22');
+describe('itineraryAirports / isInternationalTrip', () => {
+  const seg = (origin: string, destination: string) => ({ origin, destination }) as never;
+  const known = [
+    { iataCode: 'DEL', countryCode: 'IN' },
+    { iataCode: 'BOM', countryCode: 'IN' },
+    { iataCode: 'DXB', countryCode: 'AE' },
+  ];
+
+  it('lists each airport once', () => {
+    expect(itineraryAirports({ slices: [{ segments: [seg('DEL', 'BOM'), seg('BOM', 'DXB')] }, { segments: [seg('DXB', 'DEL')] }] } as never)).toEqual(['DEL', 'BOM', 'DXB']);
   });
 
+  it('one country → domestic; two countries or an unknown airport → international', () => {
+    expect(isInternationalTrip(['DEL', 'BOM'], known)).toBe(false);
+    expect(isInternationalTrip(['DEL', 'DXB'], known)).toBe(true);
+    expect(isInternationalTrip(['DEL', 'XXX'], known)).toBe(true);
+  });
+});
+
+describe('addMonths', () => {
   it('adds months, clamping to month end and crossing years', () => {
     expect(addMonths('2026-08-31', 6)).toBe('2027-02-28');
     expect(addMonths('2027-08-31', 6)).toBe('2028-02-29');

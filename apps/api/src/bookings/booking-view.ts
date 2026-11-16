@@ -1,4 +1,4 @@
-import type { InsuranceQuote, PublicBooking, PublicFlightOffer } from '@ota/contracts';
+import type { BookingAirport, InsuranceQuote, PublicBooking, PublicFlightOffer } from '@ota/contracts';
 import type { Prisma } from '@ota/db';
 import { currencyDigits, type Money, type SupplierName } from '@ota/suppliers';
 import type { BookingWithDetails } from './booking-store.service.js';
@@ -20,7 +20,12 @@ export function maskDocumentNumber(number: string): string {
  */
 export function toPublicBooking(
   b: BookingWithDetails,
-  ctx: { decrypt: (value: string) => string; quotes: InsuranceQuote[] },
+  ctx: {
+    decrypt: (value: string) => string;
+    quotes: InsuranceQuote[];
+    airports: Record<string, BookingAirport>;
+    international: boolean;
+  },
 ): PublicBooking {
   const money = (value: Prisma.Decimal) => toMoney(value, b.currency);
   const refById = new Map(b.passengers.map((p) => [p.id, p.supplierPassengerId]));
@@ -44,6 +49,8 @@ export function toPublicBooking(
     // Mock and Duffel test mode are not real inventory; only TBO (later) is.
     demo: b.supplier !== 'tbo',
     offer: b.offerSnapshot as unknown as PublicFlightOffer,
+    airports: ctx.airports,
+    trip: { international: ctx.international },
     expiresAt: b.offerExpiresAt.toISOString(),
     price: {
       currency: b.currency,

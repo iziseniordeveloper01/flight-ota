@@ -54,5 +54,5 @@ test('search DEL → BOM, filter direct, open offer details', async ({ page }) =
   await expect(details.getByText(/Price confirmed with the airline|Price updated from/)).toBeVisible();
   await expect(details.getByText(/^Total$/)).toBeVisible();
   await expect(details.getByText(/\$\d[\d,]*\.\d{2}/).first()).toBeVisible();
-  await expect(details.getByRole('button', { name: 'Continue to booking' })).toBeDisabled();
+  await expect(details.getByRole('link', { name: 'Continue to booking' })).toHaveAttribute('href', /^\/flights\/confirm\?offer=mock%3A/);
 });

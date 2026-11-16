@@ -12,7 +12,7 @@ import {
   parseAsNumberLiteral,
   parseAsString,
   parseAsStringLiteral,
-} from 'nuqs';
+} from 'nuqs/server';
 import { EMPTY_FILTERS, STOP_BUCKETS, TIME_BUCKETS, type OfferFilters } from './offer-filters';
 import { SORT_KEYS } from './offer-sort';
 

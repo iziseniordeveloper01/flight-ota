@@ -3,6 +3,7 @@ import {
   ageOnDate,
   contactSchema,
   idempotencyKeySchema,
+  lastFlightDate,
   passengerDetailsSchema,
   passengerTypeForAge,
   updateBookingDetailsSchema,
@@ -22,6 +23,14 @@ const contact = { title: 'mr', givenName: 'John', familyName: 'Smith', email: ' 
 
 const paths = (result: { success: boolean; error?: { issues: Array<{ path: PropertyKey[] }> } }) =>
   result.error?.issues.map((i) => i.path.join('.')) ?? [];
+
+describe('lastFlightDate', () => {
+  it('is the local date of the last segment departure (no Date parsing)', () => {
+    const seg = (departureAt: string) => ({ departureAt });
+    const offer = { slices: [{ segments: [seg('2026-12-14T10:00:00')] }, { segments: [seg('2026-12-21T23:00:00'), seg('2026-12-22T07:00:00')] }] };
+    expect(lastFlightDate(offer as never)).toBe('2026-12-22');
+  });
+});
 
 describe('ageOnDate / passengerTypeForAge', () => {
   it('a birthday on the travel date counts', () => {
@@ -67,6 +76,12 @@ describe('passengerDetailsSchema', () => {
     ['passport too short', { document: { type: 'passport', number: 'AB12', issuingCountry: 'GB', expiryDate: '2030-01-01' } }, 'document.number'],
   ])('%s → issue at %s', (_name, patch, path) => {
     expect(paths(passengerDetailsSchema.safeParse({ ...adult, ...patch }))).toContain(path);
+  });
+
+  it('document may be { keepExisting: true } (the stored passport is kept), nothing else', () => {
+    expect(passengerDetailsSchema.parse({ ...adult, document: { keepExisting: true } }).document).toEqual({ keepExisting: true });
+    expect(passengerDetailsSchema.safeParse({ ...adult, document: { keepExisting: false } }).success).toBe(false);
+    expect(passengerDetailsSchema.safeParse({ ...adult, document: {} }).success).toBe(false);
   });
 
   it('a mononym with the flag is valid; an infant needs an adult', () => {

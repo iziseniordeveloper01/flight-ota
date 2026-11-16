@@ -12,12 +12,16 @@ import { multiplyMoney, sumMoney, type Ancillaries, type Money, type OfferPassen
 
 // Pure booking rules (no DB, no HTTP) so every edge case is unit-testable.
 
-/** Local date (YYYY-MM-DD) of the last flight's departure: the day airlines apply age rules. */
-export function lastFlightDate(offer: Pick<PublicFlightOffer, 'slices'>): string {
-  const lastSlice = offer.slices[offer.slices.length - 1];
-  const lastSegment = lastSlice.segments[lastSlice.segments.length - 1];
-  // Airport-local "YYYY-MM-DDTHH:mm:ss": the date is just the first 10 chars (no Date parsing).
-  return lastSegment.departureAt.slice(0, 10);
+/** Every airport code on the itinerary (origins and destinations of all segments), deduplicated. */
+export function itineraryAirports(offer: Pick<PublicFlightOffer, 'slices'>): string[] {
+  return [...new Set(offer.slices.flatMap((s) => s.segments.flatMap((x) => [x.origin, x.destination])))];
+}
+
+/** More than one country — or an airport we don't know, so passports are asked (the safe side). */
+export function isInternationalTrip(codes: string[], known: Array<{ iataCode: string; countryCode: string }>): boolean {
+  const countryByCode = new Map(known.map((a) => [a.iataCode, a.countryCode]));
+  if (codes.some((c) => !countryByCode.has(c))) return true;
+  return new Set(codes.map((c) => countryByCode.get(c))).size > 1;
 }
 
 /** YYYY-MM-DD + n months, clamping the day (31 Aug + 6 months → 28/29 Feb). */
@@ -40,8 +44,11 @@ export interface PassengerRulesContext {
   maxNameLength: number | null;
 }
 
+/** A passenger whose `document` is resolved (a `keepExisting` replaced by the stored one). */
+export type RulesPassenger = Omit<PassengerDetails, 'document'> & { document?: { expiryDate: string } | null };
+
 export function checkPassengers(
-  passengers: PassengerDetails[],
+  passengers: RulesPassenger[],
   ctx: PassengerRulesContext,
 ): { issues: BookingIssue[]; warnings: BookingWarning[] } {
   const issues: BookingIssue[] = [];

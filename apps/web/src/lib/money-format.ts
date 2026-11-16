@@ -21,6 +21,18 @@ export function formatMoney(money: Money): string {
   return formatter(money.currency).format(money.amount as Intl.StringNumericLiteral);
 }
 
+const nameFormatters = new Map<string, Intl.NumberFormat>();
+
+/** "20.00 US dollars": for screen-reader labels, where "$20.00" can be read ambiguously. */
+export function formatMoneyWords(money: Money): string {
+  let f = nameFormatters.get(money.currency);
+  if (!f) {
+    f = new Intl.NumberFormat(LOCALE, { style: 'currency', currency: money.currency, currencyDisplay: 'name' });
+    nameFormatters.set(money.currency, f);
+  }
+  return f.format(money.amount as Intl.StringNumericLiteral);
+}
+
 /** Integer minor units (e.g. cents) for range filters. Exact: BigInt, no floats. */
 export function moneyToMinor(money: Money): bigint {
   return toMinor(money.amount, currencyDigits(money.currency));

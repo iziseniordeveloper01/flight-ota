@@ -53,8 +53,12 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
   - `POST /bookings {offerId}` → re-prices (FlightsService.getOffer, 410 if gone) → DRAFT; returns the guest
     token ONCE (`meta.guestToken`) + `priceChanged`. Everything else needs header `X-Booking-Token`.
   - `GET /bookings/:id` (lazy expiry; CONFIRMING → `retrieveOrder` recovery, throttled 10s via Redis),
-    `GET …/ancillaries`, `GET …/seat-maps` (Redis `bookings:{ancillaries,seat-maps}:v1:<id>`, TTL = offer expiry),
-    `PUT …/details` (DRAFT only; replaces passengers + add-ons; 422 business rules; returns `meta.warnings`),
+    `GET …/ancillaries`, `GET …/seat-maps` (Redis `bookings:{ancillaries,seat-maps}:v1:<id>`, TTL = offer expiry;
+    ancillaries are served with `identityDocumentRequired` RESOLVED: supplier value, else international trip;
+    the raw supplier null stays internal),
+    `PUT …/details` (DRAFT only; replaces passengers + add-ons; 422 business rules; returns `meta.warnings`;
+    a passenger may send `document: { keepExisting: true }` to keep the stored encrypted passport — none
+    stored → 422 DOCUMENT_REQUIRED),
     `POST …/checkout` (fresh re-price of fare + add-ons + insurance, bypassing cache: total changed → stays
     DRAFT, amounts/snapshot updated, 422 PRICE_CHANGED {previousTotal,newTotal} — calling again accepts;
     add-on gone → 422 SERVICE_UNAVAILABLE {serviceIds}; else → PENDING_PAYMENT),
@@ -71,6 +75,8 @@ NestJS 12 backend for the flight OTA. ESM + Vitest, TypeScript strict, Node 24.
 - **Lazy expiry**: DRAFT/PENDING_PAYMENT read after `offerExpiresAt` → EXPIRED. CONFIRMING never expires.
 - **Guest token**: 32 random bytes (base64url), only the sha256 is stored, compared with `timingSafeEqual`.
   Unknown id, malformed id, missing or wrong token → the same 404.
+- **Booking view** also carries `airports` (name/city/country per IATA code on the itinerary, from the
+  airports table) and `trip.international` (more than one country, or an unknown airport).
 - **Encryption**: DOB and passport number are encrypted (`FieldEncryptionService`); responses show the
   document as `*****123` only. Responses are built by `toPublicBooking()` (allow-list: never supplierRef,
   supplierOfferId, supplierOrderId, token hash).

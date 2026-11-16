@@ -55,6 +55,11 @@
     outline: 2px solid var(--ring);
     outline-offset: 2px;
   }
+  /* A field focused after a failed submit stays clear of the sticky header and price bar. */
+  [aria-invalid='true'],
+  [data-invalid] {
+    scroll-margin-block: 6rem 10rem;
+  }
 }
 
 /* Respect the OS "reduce motion" setting: kill transitions/animations (sheets, skeleton pulse). */

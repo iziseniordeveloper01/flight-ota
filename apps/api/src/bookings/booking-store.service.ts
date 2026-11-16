@@ -17,6 +17,12 @@ export const BOOKING_DETAILS = {
 
 export type BookingWithDetails = Prisma.BookingGetPayload<{ include: typeof BOOKING_DETAILS }>;
 export type Tx = Prisma.TransactionClient;
+export interface AirportRow {
+  iataCode: string;
+  name: string;
+  city: string | null;
+  countryCode: string;
+}
 
 export interface TransitionOptions {
   /** Extra columns written in the same UPDATE as the status (pnr, failureCode, …). */
@@ -134,15 +140,15 @@ export class BookingStore {
     return withTimeout(this.prisma.booking.update({ where: { id }, data }), DB_TIMEOUT_MS, 'booking update');
   }
 
-  isInternational(iataCodes: string[]): Promise<boolean> {
-    const codes = [...new Set(iataCodes)];
+  /** Known airports among `iataCodes` (unknown codes are simply missing). */
+  airports(iataCodes: string[]): Promise<AirportRow[]> {
     return withTimeout(
-      this.prisma.airport
-        .findMany({ where: { iataCode: { in: codes } }, select: { countryCode: true } })
-        // An airport we don't know counts as international: asking for a passport is the safe side.
-        .then((rows) => rows.length < codes.length || new Set(rows.map((r) => r.countryCode)).size > 1),
+      this.prisma.airport.findMany({
+        where: { iataCode: { in: [...new Set(iataCodes)] } },
+        select: { iataCode: true, name: true, city: true, countryCode: true },
+      }),
       DB_TIMEOUT_MS,
-      'airport countries',
+      'airports lookup',
     );
   }
 }

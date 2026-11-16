@@ -39,6 +39,10 @@ Turborepo + pnpm 10 workspaces, Node 24, ESM everywhere. Package-specific rules 
   never leave the API unmasked. Never log names, DOBs, documents, emails or phones.
 - Guests manage a booking with the `X-Booking-Token` returned once at creation (only its sha256 is stored).
 - `POST /bookings/:id/confirm-demo` is dev/test only (404 in production); real payments are Step 8.
+- The server decides whether a passport is required: `GET …/ancillaries` returns
+  `identityDocumentRequired` resolved to true/false; the booking view carries `airports` + `trip.international`.
+- Web: the browser never sees the guest token — Next route handlers (`/api/bookings/*`) keep it in an
+  httpOnly cookie and add it server-side (see `apps/web/AGENTS.md`).
 
 ## Contracts
 - Request schemas and public types live in `@ota/contracts`; api and web both import from there. Never
