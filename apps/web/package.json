@@ -10,7 +10,7 @@
     "typecheck": "next typegen && tsc --noEmit",
     "lint": "oxlint src/ e2e/",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test && playwright test -c playwright.payments.config.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^7.0.6",

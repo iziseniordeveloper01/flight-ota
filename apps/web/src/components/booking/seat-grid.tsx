@@ -1,6 +1,6 @@
 'use client';
 
-import type { OfferPassenger, SeatMap, SeatMapElement, SeatMapRow } from '@ota/contracts';
+import type { OfferPassenger, PublicSeatMap, PublicSeatMapElement, PublicSeatMapRow } from '@ota/contracts';
 import { Check, User } from 'lucide-react';
 import { useState, type CSSProperties } from 'react';
 import { messages } from '@/lib/messages';
@@ -30,7 +30,7 @@ const ROW = 'grid w-full justify-center gap-x-0.5 md:gap-x-1';
 
 const column = (designator: string) => designator.replace(/^\d+/, '');
 
-const seatCount = (row: SeatMapRow) => row.sections.reduce((n, s) => n + s.elements.filter((e) => e.type === 'seat').length, 0);
+const seatCount = (row: PublicSeatMapRow) => row.sections.reduce((n, s) => n + s.elements.filter((e) => e.type === 'seat').length, 0);
 
 // ---------------------------------------------------------------------------------------------
 // Layout. A seat map is a fixed grid: segment + deck + row + section + column identifies every
@@ -38,14 +38,14 @@ const seatCount = (row: SeatMapRow) => row.sections.reduce((n, s) => n + s.eleme
 
 interface CellView {
   key: string;
-  el: SeatMapElement;
+  el: PublicSeatMapElement;
   ei: number;
   /** CSS grid placement within the row. */
   gridColumn: string;
 }
 interface RowView {
   key: string;
-  row: SeatMapRow;
+  row: PublicSeatMapRow;
   cells: Array<CellView & { si: number }>;
 }
 interface CabinView {
@@ -57,7 +57,7 @@ interface CabinView {
   rows: RowView[];
 }
 
-function layout(map: SeatMap): CabinView[] {
+function layout(map: PublicSeatMap): CabinView[] {
   return map.cabins.map((cabin) => {
     // Several cabins can share a deck (business + economy): their first row number tells them apart.
     const cabinKey = `${map.segmentRef}-${cabin.deck}-${cabin.rows.find((r) => r.number !== null)?.number ?? 'none'}`;
@@ -107,7 +107,7 @@ function layout(map: SeatMap): CabinView[] {
 
     // Column letters from the row with the most seats: the first row is often a bassinet / exit row
     // with seats missing, which would mislabel the columns.
-    const widest = cabin.rows.filter((r) => r.number !== null).reduce<SeatMapRow | null>((best, r) => (!best || seatCount(r) > seatCount(best) ? r : best), null);
+    const widest = cabin.rows.filter((r) => r.number !== null).reduce<PublicSeatMapRow | null>((best, r) => (!best || seatCount(r) > seatCount(best) ? r : best), null);
     const header =
       widest && seatCount(widest) > 0
         ? widest.sections.flatMap((s, si) =>
@@ -121,9 +121,9 @@ function layout(map: SeatMap): CabinView[] {
 
 /** Info line for the hovered / focused seat (pointer devices; on phones the bottom bar says it). */
 function inspect(
-  map: SeatMap,
+  map: PublicSeatMap,
   designator: string,
-  describe: (row: SeatMapRow, si: number, ei: number, seat: SeatElement) => { info: string },
+  describe: (row: PublicSeatMapRow, si: number, ei: number, seat: SeatElement) => { info: string },
 ): string | null {
   for (const row of map.cabins.flatMap((c) => c.rows)) {
     for (const [si, section] of row.sections.entries()) {
@@ -136,7 +136,7 @@ function inspect(
 }
 
 interface Props {
-  map: SeatMap;
+  map: PublicSeatMap;
   passenger: OfferPassenger;
   selection: SeatSelection;
   onToggle: (seat: SeatElement) => void;
@@ -151,17 +151,17 @@ interface Props {
 export function SeatGrid({ map, passenger, selection, onToggle }: Props) {
   const [inspected, setInspected] = useState<string | null>(null);
 
-  const describe = (row: SeatMapRow, si: number, ei: number, seat: SeatElement) => {
+  const describe = (row: PublicSeatMapRow, si: number, ei: number, seat: SeatElement) => {
     const { status, service } = seatStatus(seat, map.segmentRef, passenger.ref, selection);
     const position = messages.seats.position[seatPosition(row, si, ei)];
-    const free = status === 'free' || (status === 'selected' && service !== undefined && isFree(service.price));
-    const price = service && status !== 'taken' && status !== 'unavailable' ? (free ? messages.seats.priceFree : formatMoneyWords(service.price)) : null;
+    const free = status === 'free' || (status === 'selected' && service !== undefined && isFree(service.displayPrice));
+    const price = service && status !== 'taken' && status !== 'unavailable' ? (free ? messages.seats.priceFree : formatMoneyWords(service.displayPrice)) : null;
     const statusWord =
       status === 'selected' ? messages.seats.status.selected : status === 'taken' ? messages.seats.status.taken : status === 'unavailable' ? messages.seats.status.unavailable : messages.seats.status.available;
     return {
       status,
       label: messages.seats.seatAria(seat.designator, position, price, statusWord),
-      info: [seat.designator, position, service && status !== 'unavailable' && status !== 'taken' ? (free ? messages.seats.free : formatMoney(service.price)) : statusWord, seat.name]
+      info: [seat.designator, position, service && status !== 'unavailable' && status !== 'taken' ? (free ? messages.seats.free : formatMoney(service.displayPrice)) : statusWord, seat.name]
         .filter(Boolean)
         .join(' · '),
     };
@@ -170,7 +170,7 @@ export function SeatGrid({ map, passenger, selection, onToggle }: Props) {
   const inspectedInfo = inspected ? inspect(map, inspected, describe) : null;
   const cabins = layout(map);
 
-  const cell = (row: SeatMapRow, { key, el, ei, si, gridColumn }: CellView & { si: number }) => {
+  const cell = (row: PublicSeatMapRow, { key, el, ei, si, gridColumn }: CellView & { si: number }) => {
     const style: CSSProperties = { gridColumn };
     if (el.type === 'gap') return null;
     if (el.type === 'exit') {

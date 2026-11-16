@@ -78,8 +78,9 @@ describe('facets', () => {
     expect(facets.stops).toEqual({ 0: 1, 1: 2, 2: 1 });
     expect(facets.times).toEqual({ night: 1, morning: 1, afternoon: 1, evening: 1 });
     const aa = facets.airlines.find((a) => a.code === 'AA');
-    expect(aa).toMatchObject({ count: 2, minPrice: { amount: '75.50', currency: 'USD' } });
-    expect(facets.price).toEqual({ min: 7550n, max: 30000n, currency: 'USD' });
+    // Facets use the display price (INR — the only currency the web shows).
+    expect(aa).toMatchObject({ count: 2, minPrice: { amount: '75.50', currency: 'INR' } });
+    expect(facets.price).toEqual({ min: 7550n, max: 30000n, currency: 'INR' });
   });
   it('no price facet for mixed currencies', () => {
     expect(filterFacets([direct, offer({ currency: 'EUR' })]).price).toBeNull();

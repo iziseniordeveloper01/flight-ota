@@ -21,8 +21,8 @@ export default async function BookingPage({ params, searchParams }: PageProps<'/
 
   const searchUrl = searchUrlForOffer(booking.offer);
   const ancillaries = booking.status === 'DRAFT' ? await getAncillariesForPage(id) : null;
-  // ?was=<amount>: the price changed when the booking was created (shown once).
-  const previous = typeof was === 'string' && /^\d{1,10}(\.\d{1,3})?$/.test(was) ? { amount: was, currency: booking.price.currency } : null;
+  // ?was=<amount>: the fare (INR) changed when the booking was created (shown once).
+  const previous = typeof was === 'string' && /^\d{1,10}(\.\d{1,3})?$/.test(was) ? { amount: was, currency: booking.displayPrice.currency } : null;
 
   return (
     <div className="mx-auto max-w-6xl px-4 pt-4 pb-40 lg:pb-10">
@@ -33,7 +33,7 @@ export default async function BookingPage({ params, searchParams }: PageProps<'/
         {booking.demo && <DemoNote compact>{messages.booking.demoShort}</DemoNote>}
         {previous && (
           <output className="block rounded-lg bg-warning p-3 font-medium text-warning-foreground">
-            {messages.booking.priceChanged(formatMoney(previous), formatMoney(booking.price.fare))}
+            {messages.booking.priceChanged(formatMoney(previous), formatMoney(booking.displayPrice.fare))}
           </output>
         )}
         <CollapsibleTrip offer={booking.offer} airports={booking.airports} />

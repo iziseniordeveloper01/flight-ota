@@ -15,7 +15,7 @@ export function SortTabs({ leads }: { leads: Record<SortKey, PublicFlightOffer |
             <span>{messages.sort[key]}</span>
             {lead && (
               <span className="text-xs font-normal text-muted-foreground tabular-nums">
-                {formatMoney(lead.price.total)}
+                {formatMoney(lead.displayPrice.total)}
               </span>
             )}
           </TabsTrigger>

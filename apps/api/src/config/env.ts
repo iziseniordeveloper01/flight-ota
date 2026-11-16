@@ -1,6 +1,23 @@
+import { CHARGE_CURRENCY, PAYMENT_PROVIDERS } from '@ota/contracts';
 import { z } from 'zod';
 
 const DEFAULT_WEB_ORIGIN = 'http://localhost:3000';
+
+// An empty `KEY=` line counts as unset.
+const optionalString = z
+  .string()
+  .trim()
+  .optional()
+  .transform((v) => v || undefined);
+const nonNegativeInt = z.coerce.number().int().min(0);
+// Percent with at most 2 decimals, as a string (never a float): "2", "2.5", "0".
+const percent = z
+  .string()
+  .trim()
+  .regex(/^\d{1,2}(\.\d{1,2})?$/, 'must be a percentage 0–99.99 with at most 2 decimals');
+const bool = z
+  .enum(['true', 'false', '1', '0'])
+  .transform((v) => v === 'true' || v === '1');
 
 // z.url() accepts any scheme (e.g. http://), so also pin the protocol per service.
 // URL.canParse guards new URL(): Zod keeps running refinements even after z.url() fails.
@@ -36,6 +53,39 @@ const envSchema = z
       }),
     // Travel insurance provider. Only the clearly-labelled demo provider exists for now.
     INSURANCE_PROVIDER: z.enum(['demo']).default('demo'),
+    BRAND_NAME: z.string().trim().min(1).max(40).default('SkyFare'),
+
+    // ---- Pricing (business decisions — config, not code) ----
+    // Customers are charged in this currency; only INR is supported (Razorpay India).
+    CHARGE_CURRENCY: z.literal(CHARGE_CURRENCY).default(CHARGE_CURRENCY),
+    // Markup on the fare: fixed (minor units of CHARGE_CURRENCY, i.e. paise) + percent.
+    MARKUP_FIXED_MINOR: nonNegativeInt.default(0),
+    MARKUP_PERCENT: percent.default('0'),
+    // Stored for the cancellation flow (Step 9); not used yet.
+    CANCELLATION_FEE_MINOR: nonNegativeInt.default(0),
+    // FX risk buffer on converted amounts (not markup): rate × (1 + buffer%).
+    FX_BUFFER_PERCENT: percent.default('2'),
+    FX_API_URL: withProtocol('https:', 'http:').default('https://api.frankfurter.dev'),
+
+    // ---- Payments ----
+    PAYMENT_PROVIDER: z.enum(PAYMENT_PROVIDERS).default('demo'),
+    RAZORPAY_KEY_ID: optionalString,
+    RAZORPAY_KEY_SECRET: optionalString,
+    RAZORPAY_WEBHOOK_SECRET: optionalString,
+    RAZORPAY_API_URL: withProtocol('https:', 'http:').default('https://api.razorpay.com'),
+
+    // ---- Background jobs (BullMQ) ----
+    // Run the queue workers inside this process. Production runs a separate worker process.
+    WORKERS_ENABLED: bool.default(true),
+    // Redis key prefix of every queue (keeps dev, e2e and Playwright jobs apart on one Redis).
+    QUEUE_PREFIX: z.string().regex(/^[a-z0-9-]{1,32}$/).default('bull'),
+
+    // ---- Email (SMTP; Mailpit locally, SES SMTP in production) ----
+    SMTP_HOST: z.string().trim().min(1).default('127.0.0.1'),
+    SMTP_PORT: z.coerce.number().int().positive().default(1025),
+    SMTP_USER: optionalString,
+    SMTP_PASS: optionalString,
+    SMTP_FROM: z.string().trim().min(3).default('SkyFare <bookings@skyfare.test>'),
   })
   .superRefine((env, ctx) => {
     // Messages never echo the value: validation output ends up in deploy logs.
@@ -52,6 +102,24 @@ const envSchema = z
         path: ['DUFFEL_ACCESS_TOKEN'],
         message: 'must start with "duffel_"',
       });
+    }
+    if (env.PAYMENT_PROVIDER === 'razorpay') {
+      for (const key of ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET', 'RAZORPAY_WEBHOOK_SECRET'] as const) {
+        if (!env[key]) ctx.addIssue({ code: 'custom', path: [key], message: 'is required when PAYMENT_PROVIDER=razorpay' });
+      }
+    }
+    if (env.RAZORPAY_KEY_ID && !/^rzp_(test|live)_/.test(env.RAZORPAY_KEY_ID)) {
+      ctx.addIssue({ code: 'custom', path: ['RAZORPAY_KEY_ID'], message: 'must start with "rzp_test_" or "rzp_live_"' });
+    }
+    // Live money only from a production deploy; a live key on a laptop is a mistake.
+    if (env.RAZORPAY_KEY_ID?.startsWith('rzp_live_') && env.NODE_ENV !== 'production') {
+      ctx.addIssue({ code: 'custom', path: ['RAZORPAY_KEY_ID'], message: 'live keys are only allowed when NODE_ENV=production' });
+    }
+    if (env.PAYMENT_PROVIDER === 'fake' && env.NODE_ENV !== 'test') {
+      ctx.addIssue({ code: 'custom', path: ['PAYMENT_PROVIDER'], message: '"fake" is only allowed when NODE_ENV=test' });
+    }
+    if (env.PAYMENT_PROVIDER === 'demo' && env.NODE_ENV === 'production') {
+      ctx.addIssue({ code: 'custom', path: ['PAYMENT_PROVIDER'], message: '"demo" is not allowed when NODE_ENV=production' });
     }
     // In production a wrong CORS origin silently breaks the site, so never fall back to localhost.
     if (env.NODE_ENV === 'production' && !env.WEB_ORIGIN) {

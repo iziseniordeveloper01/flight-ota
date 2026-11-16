@@ -7,9 +7,13 @@ describe('stepPathFor', () => {
     ['DRAFT', `/booking/${ID}`],
     ['EXPIRED', `/booking/${ID}`],
     ['PENDING_PAYMENT', `/booking/${ID}/review`],
+    ['PAID', `/booking/${ID}/review`], // "confirming" screen
     ['CONFIRMING', `/booking/${ID}/review`],
-    ['FAILED', `/booking/${ID}/review`],
+    ['FAILED', `/booking/${ID}/review`], // refund message
+    ['REFUND_PENDING', `/booking/${ID}/review`],
+    ['REFUNDED', `/booking/${ID}/review`],
     ['CONFIRMED', `/booking/${ID}/complete`],
+    ['CANCELLED', `/booking/${ID}/complete`],
   ] as const)('%s → %s', (status, path) => {
     expect(stepPathFor(ID, status)).toBe(path);
   });

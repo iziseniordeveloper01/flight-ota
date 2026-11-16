@@ -38,7 +38,7 @@ export async function bookingToken(bookingId: string): Promise<string | undefine
 /** A booking call with the token from the cookie; `null` when there is no cookie for this booking. */
 export async function bookingFetch(
   bookingId: string,
-  suffix: '' | '/ancillaries' | '/seat-maps' | '/details' | '/checkout' | '/confirm-demo',
+  suffix: '' | '/ancillaries' | '/seat-maps' | '/details' | '/checkout' | '/confirm-demo' | '/payment-order' | '/payment-verify',
   init: RequestInit & { timeoutMs?: number } = {},
 ): Promise<Response | null> {
   const token = await bookingToken(bookingId);

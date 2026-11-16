@@ -1,4 +1,4 @@
-import type { OfferPassenger, SeatMapRow } from '@ota/contracts';
+import type { OfferPassenger, PublicSeatMapRow } from '@ota/contracts';
 import {
   clearSeat,
   findSeat,
@@ -13,11 +13,12 @@ import {
 } from './seat-selection';
 
 const usd = (amount: string) => ({ amount, currency: 'USD' });
+const inr = (amount: string) => ({ amount, currency: 'INR' });
 const seat = (designator: string, prices: Record<string, string>, available = true): SeatElement => ({
   type: 'seat',
   designator,
   available,
-  services: available ? Object.entries(prices).map(([passengerRef, amount]) => ({ passengerRef, serviceId: `${designator}-${passengerRef}`, price: usd(amount) })) : [],
+  services: available ? Object.entries(prices).map(([passengerRef, amount]) => ({ passengerRef, serviceId: `${designator}-${passengerRef}`, price: usd(amount), displayPrice: inr(amount) })) : [],
 });
 const adult1: OfferPassenger = { ref: 'a1', type: 'adult' };
 const adult2: OfferPassenger = { ref: 'a2', type: 'adult' };
@@ -40,7 +41,8 @@ describe('seat selection rules', () => {
 
   it('one seat per passenger per flight: picking another replaces it; tapping again removes it', () => {
     let s = toggleSeat({}, SEG, adult1, free);
-    expect(s[SEG].a1).toEqual({ serviceId: '14A-a1', label: 'Seat 14A', price: usd('0.00') });
+    // The selection carries what the customer pays (INR).
+    expect(s[SEG].a1).toEqual({ serviceId: '14A-a1', label: 'Seat 14A', price: inr('0.00') });
     s = toggleSeat(s, SEG, adult1, paid);
     expect(Object.keys(s[SEG])).toEqual(['a1']);
     expect(s[SEG].a1.serviceId).toBe('14C-a1');
@@ -68,14 +70,14 @@ describe('seat selection rules', () => {
     expect(selectedSeats(withoutServices(s, ['14C-a1'])).map((x) => x.serviceId)).toEqual(['14A-a1']);
     expect(
       selectionFromBooking([
-        { type: 'seat', passengerRef: 'a1', segmentRef: SEG, serviceId: 'x', label: 'Seat 3D', quantity: 1, amount: usd('9.00') },
-        { type: 'bag', passengerRef: 'a1', segmentRef: null, serviceId: 'b', label: 'bag', quantity: 1, amount: usd('30.00') },
+        { type: 'seat', passengerRef: 'a1', segmentRef: SEG, serviceId: 'x', label: 'Seat 3D', quantity: 1, amount: usd('9.00'), displayAmount: inr('752.00') },
+        { type: 'bag', passengerRef: 'a1', segmentRef: null, serviceId: 'b', label: 'bag', quantity: 1, amount: usd('30.00'), displayAmount: inr('2506.00') },
       ]),
-    ).toEqual({ [SEG]: { a1: { serviceId: 'x', label: 'Seat 3D', price: usd('9.00') } } });
+    ).toEqual({ [SEG]: { a1: { serviceId: 'x', label: 'Seat 3D', price: inr('752.00') } } });
   });
 
   it('window / aisle / middle from the row layout (gaps and aisles)', () => {
-    const row: SeatMapRow = {
+    const row: PublicSeatMapRow = {
       number: 14,
       sections: [{ elements: [free, paid, { type: 'gap' }, childOnly] }, { elements: [blocked, free, paid] }],
     };
@@ -87,7 +89,7 @@ describe('seat selection rules', () => {
   });
 
   it('findSeat: designator + position of a selected service (works after a refresh)', () => {
-    const row: SeatMapRow = { number: 14, sections: [{ elements: [seat('14A', { a1: '0.00' }), seat('14C', { a1: '20.00', a2: '20.00' })] }, { elements: [seat('14D', { a1: '0.00' })] }] };
+    const row: PublicSeatMapRow = { number: 14, sections: [{ elements: [seat('14A', { a1: '0.00' }), seat('14C', { a1: '20.00', a2: '20.00' })] }, { elements: [seat('14D', { a1: '0.00' })] }] };
     const map = { segmentRef: SEG, cabins: [{ deck: 0, rows: [row] }] };
     expect(findSeat(map, '14C-a2')).toEqual({ designator: '14C', position: 'aisle' });
     expect(findSeat(map, '14A-a1')).toEqual({ designator: '14A', position: 'window' });

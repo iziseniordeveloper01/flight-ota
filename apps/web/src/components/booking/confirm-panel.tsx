@@ -5,8 +5,8 @@ import { AlertCircle, Info, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
+import { TermsAgreement } from '@/components/booking/terms-agreement';
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
 import { ApiError, bookingApi } from '@/lib/api';
 import { completePath, searchUrlForOffer } from '@/lib/booking-steps';
 import { messages } from '@/lib/messages';
@@ -32,15 +32,17 @@ function failedPhase(failure: PublicBooking['failure']): Phase {
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * Step 2 (demo): accept the terms, confirm, wait for the airline. 200 → complete; 202 CONFIRMING →
+ * Step 2 with PAYMENT_PROVIDER=demo (no money; PayPanel is used with a real provider): accept the
+ * terms, confirm, wait for the airline. 200 → complete; 202 CONFIRMING →
  * poll GET every 5s (max 3 min). Opening this page while CONFIRMING resumes the polling.
  */
 export function ConfirmPanel({ booking }: { booking: PublicBooking }) {
   const router = useRouter();
   const [agreed, setAgreed] = useState(false);
   const [agreeError, setAgreeError] = useState(false);
+  const inProgress = booking.status === 'PAID' || booking.status === 'CONFIRMING';
   const [phase, setPhase] = useState<Phase>(() =>
-    booking.status === 'CONFIRMING'
+    inProgress
       ? { kind: 'confirming' }
       : booking.status === 'FAILED'
         ? failedPhase(booking.failure)
@@ -82,9 +84,9 @@ export function ConfirmPanel({ booking }: { booking: PublicBooking }) {
     if (alive.current) setPhase({ kind: 'slow' });
   }
 
-  // Refresh while CONFIRMING: pick the polling up again.
+  // Refresh while PAID/CONFIRMING: pick the polling up again.
   useEffect(() => {
-    if (booking.status === 'CONFIRMING' && !started.current) {
+    if (inProgress && !started.current) {
       started.current = true;
       void poll();
     }
@@ -148,34 +150,14 @@ export function ConfirmPanel({ booking }: { booking: PublicBooking }) {
           </div>
         ) : (
           <>
-            <div>
-              <label className="flex min-h-11 cursor-pointer items-center gap-3 text-sm">
-                <Checkbox
-                  checked={agreed}
-                  aria-invalid={agreeError || undefined}
-                  aria-describedby={agreeError ? 'agree-error' : undefined}
-                  onCheckedChange={(c) => {
-                    setAgreed(c === true);
-                    setAgreeError(false);
-                  }}
-                />
-                <span>
-                  {messages.review.agree}{' '}
-                  <a href="/terms" target="_blank" rel="noopener" className="font-medium text-primary underline underline-offset-4">
-                    {messages.review.terms}
-                  </a>{' '}
-                  {messages.review.and}{' '}
-                  <a href="/privacy" target="_blank" rel="noopener" className="font-medium text-primary underline underline-offset-4">
-                    {messages.review.privacy}
-                  </a>
-                </span>
-              </label>
-              {agreeError && (
-                <p id="agree-error" className="text-sm font-medium text-destructive">
-                  {messages.review.agreeRequired}
-                </p>
-              )}
-            </div>
+            <TermsAgreement
+              agreed={agreed}
+              error={agreeError}
+              onChange={(value) => {
+                setAgreed(value);
+                setAgreeError(false);
+              }}
+            />
             <Button size="lg" className="w-full" onClick={confirm} disabled={phase.kind === 'confirming'} aria-busy={phase.kind === 'confirming'}>
               {messages.review.confirm}
             </Button>

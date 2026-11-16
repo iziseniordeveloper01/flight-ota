@@ -87,8 +87,8 @@ export function BookingForm({ booking, ancillaries }: Props) {
   });
 
   const price = priceBreakdown({
-    fare: booking.price.fare,
-    bags: selectedBags(bags, ancillaries.bags).map((b) => b.price),
+    fare: booking.displayPrice.fare,
+    bags: selectedBags(bags, ancillaries.bags).map((b) => b.displayPrice),
     seats: selectedSeats(seats).map((s) => s.price),
     insurance: insured && quote ? quote.total : null,
   });

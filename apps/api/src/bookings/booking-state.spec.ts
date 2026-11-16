@@ -5,11 +5,15 @@ const ALL = Object.values(BookingStatus);
 const ALLOWED: Array<[BookingStatus, BookingStatus]> = [
   ['DRAFT', 'PENDING_PAYMENT'],
   ['DRAFT', 'EXPIRED'],
-  ['PENDING_PAYMENT', 'CONFIRMING'],
+  ['PENDING_PAYMENT', 'PAID'],
   ['PENDING_PAYMENT', 'EXPIRED'],
+  ['PAID', 'CONFIRMING'],
   ['CONFIRMING', 'CONFIRMED'],
   ['CONFIRMING', 'FAILED'],
   ['CONFIRMED', 'CANCELLED'],
+  ['FAILED', 'REFUND_PENDING'],
+  ['EXPIRED', 'REFUND_PENDING'],
+  ['REFUND_PENDING', 'REFUNDED'],
 ];
 const key = (from: string, to: string) => `${from}→${to}`;
 const allowedKeys = new Set(ALLOWED.map(([f, t]) => key(f, t)));
@@ -33,7 +37,14 @@ describe('booking state machine', () => {
     expect(() => assertTransition(from, to)).toThrow(IllegalTransitionError);
   });
 
-  it('covers every status pair (7 × 7)', () => {
-    expect(ALLOWED.length + ILLEGAL.length).toBe(49);
+  it('covers every status pair (10 × 10)', () => {
+    expect(ALL).toHaveLength(10);
+    expect(ALLOWED.length + ILLEGAL.length).toBe(100);
+  });
+
+  it('money never skips PAID and a refund needs a terminal failure first', () => {
+    expect(canTransition('PENDING_PAYMENT', 'CONFIRMING')).toBe(false);
+    expect(canTransition('CONFIRMED', 'REFUND_PENDING')).toBe(false);
+    expect(canTransition('PAID', 'REFUND_PENDING')).toBe(false);
   });
 });

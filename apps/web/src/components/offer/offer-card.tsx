@@ -125,10 +125,10 @@ export function OfferCard({ offer, travellers, onSelect }: Props) {
       </div>
 
       <footer className="mt-2 flex items-center justify-between gap-3 border-t pt-2 md:mt-3 md:pt-3">
-        <PriceLabel total={offer.price.total} travellers={travellers} />
+        <PriceLabel total={offer.displayPrice.total} travellers={travellers} />
         <Button
           onClick={() => onSelect(offer)}
-          aria-label={messages.offer.selectLabel(offer.owner.name, formatMoney(offer.price.total))}
+          aria-label={messages.offer.selectLabel(offer.owner.name, formatMoney(offer.displayPrice.total))}
           className="shrink-0 px-6"
         >
           {messages.offer.select}

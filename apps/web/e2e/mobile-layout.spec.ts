@@ -57,7 +57,7 @@ for (const width of [360, 390]) {
 
       // Tap a paid seat: the bottom bar says seat · position · price · passenger.
       await dialog.locator('button[data-status="paid"]').first().click();
-      await expect(dialog.getByTestId('seat-footer')).toHaveText(/^Seat \d+[A-K] · (Window|Aisle|Middle) · \$\d+\.\d{2} · Adult 1$/);
+      await expect(dialog.getByTestId('seat-footer')).toHaveText(/^Seat \d+[A-K] · (Window|Aisle|Middle) · ₹[\d,]+\.\d{2} · Adult 1$/);
     });
   }
 

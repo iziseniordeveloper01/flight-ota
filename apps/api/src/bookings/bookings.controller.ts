@@ -8,14 +8,12 @@ import {
   HttpCode,
   NotFoundException,
   Param,
-  type PipeTransform,
   Post,
   Put,
   Res,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
-  bookingIdSchema,
   createBookingSchema,
   idempotencyKeySchema,
   updateBookingDetailsSchema,
@@ -30,20 +28,12 @@ import {
 import type { Response } from 'express';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
 import type { Env } from '../config/env.js';
-import { bookingNotFound } from './booking-errors.js';
+import { BookingIdPipe } from './booking-id.pipe.js';
 import { BookingsService } from './bookings.service.js';
 
 // Bookings carry personal data and live prices: never cached anywhere (also on error responses).
 const NO_STORE = ['Cache-Control', 'no-store'] as const;
 const TOKEN_HEADER = 'x-booking-token';
-
-// A malformed id can't exist: answer exactly like an unknown one (404), not 400.
-class BookingIdPipe implements PipeTransform<string, string> {
-  transform(value: string): string {
-    if (!bookingIdSchema.safeParse(value).success) throw bookingNotFound();
-    return value;
-  }
-}
 
 /**
  * Guest checkout. Only POST /bookings is open; everything else needs the X-Booking-Token returned
@@ -103,8 +93,8 @@ export class BookingsController {
   }
 
   /**
-   * DEV/TEST ONLY: books with Duffel balance (test mode) or the mock instead of a real payment.
-   * 404 in production — real payments arrive in Step 8.
+   * DEMO ONLY (PAYMENT_PROVIDER=demo): books with Duffel balance (test mode) or the mock without
+   * taking any money. 404 with a real payment provider and in production.
    */
   @Post(':id/confirm-demo')
   @Header(...NO_STORE)
@@ -114,7 +104,9 @@ export class BookingsController {
     @Headers(TOKEN_HEADER) token?: string,
     @Headers('idempotency-key') idempotencyKey?: string,
   ): Promise<BookingResponse> {
-    if (this.config.get('NODE_ENV', { infer: true }) === 'production') throw new NotFoundException();
+    if (this.config.get('NODE_ENV', { infer: true }) === 'production' || this.bookings.paymentProvider !== 'demo') {
+      throw new NotFoundException();
+    }
     const key = idempotencyKeySchema.safeParse(idempotencyKey);
     if (!key.success) {
       throw new BadRequestException({

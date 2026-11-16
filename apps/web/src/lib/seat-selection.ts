@@ -4,19 +4,20 @@ import {
   type Money,
   type OfferPassenger,
   type PublicBookingAncillary,
-  type SeatMap,
-  type SeatMapElement,
-  type SeatMapRow,
-  type SeatService,
+  type PublicSeatMap,
+  type PublicSeatMapElement,
+  type PublicSeatMapRow,
+  type PublicSeatService,
 } from '@ota/contracts';
 import { messages } from './messages';
 
-export type SeatElement = Extract<SeatMapElement, { type: 'seat' }>;
+export type SeatElement = Extract<PublicSeatMapElement, { type: 'seat' }>;
 
 export interface SelectedSeat {
   serviceId: string;
   /** "Seat 14C" */
   label: string;
+  /** Charge currency (INR) — what the customer pays. */
   price: Money;
 }
 
@@ -41,7 +42,7 @@ export function seatStatus(
   segmentRef: string,
   passengerRef: string,
   selection: SeatSelection,
-): { status: SeatStatus; service?: SeatService } {
+): { status: SeatStatus; service?: PublicSeatService } {
   const ids = new Set(seat.services.map((s) => s.serviceId));
   const onFlight = selection[segmentRef] ?? {};
   const service = seat.available ? seat.services.find((s) => s.passengerRef === passengerRef) : undefined;
@@ -49,7 +50,7 @@ export function seatStatus(
   if (mine && ids.has(mine.serviceId)) return { status: 'selected', service };
   if (Object.entries(onFlight).some(([ref, s]) => ref !== passengerRef && ids.has(s.serviceId))) return { status: 'taken' };
   if (!service) return { status: 'unavailable' };
-  return { status: isFree(service.price) ? 'free' : 'paid', service };
+  return { status: isFree(service.displayPrice) ? 'free' : 'paid', service };
 }
 
 /** Tap on a seat: select it (replacing the passenger's previous seat on this flight) or deselect it. */
@@ -64,7 +65,7 @@ export function toggleSeat(
   const onFlight = { ...selection[segmentRef] };
   if (status === 'selected') delete onFlight[passenger.ref];
   else if ((status === 'free' || status === 'paid') && service) {
-    onFlight[passenger.ref] = { serviceId: service.serviceId, label: messages.booking.seatLabel(seat.designator), price: service.price };
+    onFlight[passenger.ref] = { serviceId: service.serviceId, label: messages.booking.seatLabel(seat.designator), price: service.displayPrice };
   } else return selection;
   return { ...selection, [segmentRef]: onFlight };
 }
@@ -90,7 +91,7 @@ export function selectionFromBooking(ancillaries: PublicBookingAncillary[]): Sea
   const selection: SeatSelection = {};
   for (const a of ancillaries) {
     if (a.type !== 'seat' || !a.segmentRef || !a.passengerRef || !a.serviceId) continue;
-    (selection[a.segmentRef] ??= {})[a.passengerRef] = { serviceId: a.serviceId, label: a.label, price: a.amount };
+    (selection[a.segmentRef] ??= {})[a.passengerRef] = { serviceId: a.serviceId, label: a.label, price: a.displayAmount };
   }
   return selection;
 }
@@ -98,7 +99,7 @@ export function selectionFromBooking(ancillaries: PublicBookingAncillary[]): Sea
 export type SeatPosition = 'window' | 'aisle' | 'middle';
 
 /** The seat a selected service belongs to (also after a refresh, when only the service id is known). */
-export function findSeat(map: SeatMap, serviceId: string): { designator: string; position: SeatPosition } | null {
+export function findSeat(map: PublicSeatMap, serviceId: string): { designator: string; position: SeatPosition } | null {
   for (const row of map.cabins.flatMap((c) => c.rows)) {
     for (const [si, section] of row.sections.entries()) {
       for (const [ei, el] of section.elements.entries()) {
@@ -112,7 +113,7 @@ export function findSeat(map: SeatMap, serviceId: string): { designator: string;
 }
 
 /** Window = outer seat of the outer sections; aisle = a seat next to the gap between sections. */
-export function seatPosition(row: SeatMapRow, sectionIndex: number, elementIndex: number): SeatPosition {
+export function seatPosition(row: PublicSeatMapRow, sectionIndex: number, elementIndex: number): SeatPosition {
   const seatIndexes = row.sections[sectionIndex].elements.flatMap((e, i) => (e.type === 'seat' ? [i] : []));
   const first = seatIndexes[0];
   const last = seatIndexes[seatIndexes.length - 1];

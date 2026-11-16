@@ -52,6 +52,7 @@ test('DEL → BOM: 1 adult, bag + seat + insurance → review → confirm → PN
   await expect(page.getByTestId('pnr')).toHaveText(/^[A-Z0-9]{6}$/);
   await expect(page.getByText('Test booking — no real ticket issued.')).toBeVisible();
   await expect(page.getByText(/DEMO-[A-Z0-9]+/).first()).toBeVisible();
+  await expect(page.getByTestId('emailed')).toHaveText("We've emailed your confirmation to guest@e2e.test.");
   await expect(page.getByText('Save these references — you’ll need them to manage your booking.')).toBeVisible();
   await expect(page.getByText(/Total paid|Confirmation details for/)).toHaveCount(0);
 });

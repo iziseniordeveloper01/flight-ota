@@ -3,13 +3,17 @@ import { redirect } from 'next/navigation';
 import { BookingStepper } from '@/components/booking/booking-stepper';
 import { BookingSummary } from '@/components/booking/booking-summary';
 import { ConfirmPanel } from '@/components/booking/confirm-panel';
+import { PayPanel } from '@/components/booking/pay-panel';
 import { stepPathFor } from '@/lib/booking-steps';
 import { messages } from '@/lib/messages';
 import { getBookingForPage } from '@/server/booking-api';
 
 export const metadata: Metadata = { title: messages.review.title, robots: { index: false, follow: false } };
 
-/** Step 2 ("Payment"): in this demo a read-only review + demo confirmation. */
+/**
+ * Step 2 ("Payment"): read-only review + payment. The server decides how: a real provider →
+ * PayPanel (Razorpay); PAYMENT_PROVIDER=demo → ConfirmPanel (no money).
+ */
 export default async function ReviewPage({ params }: PageProps<'/booking/[id]/review'>) {
   const { id } = await params;
   const booking = await getBookingForPage(id);
@@ -25,7 +29,7 @@ export default async function ReviewPage({ params }: PageProps<'/booking/[id]/re
       <div className="mt-4 flex flex-col gap-4 lg:grid lg:grid-cols-[minmax(0,1fr)_24rem] lg:items-start lg:gap-6">
         <BookingSummary booking={booking} />
         <div className="lg:sticky lg:top-4">
-          <ConfirmPanel booking={booking} />
+          {booking.payment.provider === 'demo' ? <ConfirmPanel booking={booking} /> : <PayPanel booking={booking} />}
         </div>
       </div>
     </div>

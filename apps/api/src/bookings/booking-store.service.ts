@@ -13,6 +13,7 @@ export const BOOKING_DETAILS = {
   passengers: { orderBy: { position: 'asc' } },
   // UUID v7 ids are time-ordered: insertion order.
   ancillaries: { orderBy: { id: 'asc' } },
+  payments: { orderBy: { attempt: 'asc' }, include: { refunds: { orderBy: { id: 'asc' } } } },
 } satisfies Prisma.BookingInclude;
 
 export type BookingWithDetails = Prisma.BookingGetPayload<{ include: typeof BOOKING_DETAILS }>;
@@ -122,16 +123,29 @@ export class BookingStore {
     return (event?.data as Record<string, unknown> | null) ?? null;
   }
 
-  /** Bookings that entered CONFIRMING before `cutoff` and are still there (ids + references only). */
-  stuckConfirming(cutoff: Date): Promise<Array<{ id: string; reference: string }>> {
+  /** Bookings that entered `status` before `cutoff` and are still there (ids + references only). */
+  inStatusSince(status: BookingStatus, cutoff: Date, take = 100): Promise<Array<{ id: string; reference: string }>> {
     return withTimeout(
       this.prisma.booking.findMany({
-        where: { status: 'CONFIRMING', events: { some: { toStatus: 'CONFIRMING', createdAt: { lt: cutoff } } } },
+        where: { status, events: { some: { toStatus: status, fromStatus: { not: status }, createdAt: { lt: cutoff } } } },
         select: { id: true, reference: true },
-        take: 100,
+        take,
       }),
       DB_TIMEOUT_MS,
-      'stuck bookings query',
+      `bookings in ${status} query`,
+    );
+  }
+
+  /** FAILED bookings still holding captured money (their refund was never started). */
+  failedWithCapturedPayment(take = 50): Promise<Array<{ id: string }>> {
+    return withTimeout(
+      this.prisma.booking.findMany({
+        where: { status: 'FAILED', payments: { some: { status: 'CAPTURED' } } },
+        select: { id: true },
+        take,
+      }),
+      DB_TIMEOUT_MS,
+      'failed bookings with payments query',
     );
   }
 

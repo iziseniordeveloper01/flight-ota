@@ -21,12 +21,8 @@ export function priceBreakdown(input: { fare: Money; bags: Money[]; seats: Money
   return { fare: input.fare, baggage, seats, insurance, total: sumMoney([input.fare, baggage, seats, insurance], currency) };
 }
 
-/** A saved booking's breakdown (review / complete): split bags vs seats; the total is the server's. */
-export function bookingBreakdown(booking: Pick<PublicBooking, 'price' | 'ancillaries'>): PriceBreakdown {
-  const amounts = (type: 'bag' | 'seat') => booking.ancillaries.filter((a) => a.type === type).map((a) => a.amount);
-  const insurance = booking.price.insurance;
-  return {
-    ...priceBreakdown({ fare: booking.price.fare, bags: amounts('bag'), seats: amounts('seat'), insurance }),
-    total: booking.price.total,
-  };
+/** A saved booking's breakdown (review / complete): exactly what the server charges (INR). */
+export function bookingBreakdown(booking: Pick<PublicBooking, 'displayPrice'>): PriceBreakdown {
+  const { fare, baggage, seats, insurance, total } = booking.displayPrice;
+  return { fare, baggage, seats, insurance, total };
 }

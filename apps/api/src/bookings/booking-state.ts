@@ -3,20 +3,27 @@ import type { BookingStatus } from '@ota/db';
 /**
  * Booking state machine — the ONLY allowed moves:
  *
- *   DRAFT ──checkout──► PENDING_PAYMENT ──confirm──► CONFIRMING ──► CONFIRMED ──► CANCELLED (future)
- *     │                       │                          └──────► FAILED
- *     └──── lazy expiry ──────┴──► EXPIRED
+ *   DRAFT ──checkout──► PENDING_PAYMENT ──paid──► PAID ──► CONFIRMING ──► CONFIRMED ──► CANCELLED (future)
+ *     │                       │                                 └──────► FAILED ──┐
+ *     └──── lazy expiry ──────┴──► EXPIRED ──(late payment)──► REFUND_PENDING ◄───┘ (money refunded)
+ *                                                                   └──► REFUNDED
  *
- * CONFIRMING never expires: an order may exist at the supplier, so it is settled by retrieveOrder.
+ * - PAID: money captured, ticketing not started (the ticketing job moves it on).
+ * - CONFIRMING never expires: an order may exist at the supplier, so it is settled by retrieveOrder.
+ * - REFUND_PENDING is entered only with a captured payment to give back (FAILED without one — e.g.
+ *   the demo flow — stays FAILED).
  */
 export const ALLOWED_TRANSITIONS: Readonly<Record<BookingStatus, readonly BookingStatus[]>> = {
   DRAFT: ['PENDING_PAYMENT', 'EXPIRED'],
-  PENDING_PAYMENT: ['CONFIRMING', 'EXPIRED'],
+  PENDING_PAYMENT: ['PAID', 'EXPIRED'],
+  PAID: ['CONFIRMING'],
   CONFIRMING: ['CONFIRMED', 'FAILED'],
   CONFIRMED: ['CANCELLED'],
-  FAILED: [],
-  EXPIRED: [],
+  FAILED: ['REFUND_PENDING'],
+  EXPIRED: ['REFUND_PENDING'],
   CANCELLED: [],
+  REFUND_PENDING: ['REFUNDED'],
+  REFUNDED: [],
 };
 
 /** Statuses that become EXPIRED when read after offerExpiresAt. */

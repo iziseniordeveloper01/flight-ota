@@ -1,6 +1,6 @@
 'use client';
 
-import type { BagOption, InsuranceQuote, OfferPassenger, Segment } from '@ota/contracts';
+import type { PublicBagOption, InsuranceQuote, OfferPassenger, Segment } from '@ota/contracts';
 import { Armchair, Check, Luggage, ShieldCheck } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -27,7 +27,7 @@ export function BaggageSection({
   onChange,
   unavailable,
 }: {
-  bags: BagOption[];
+  bags: PublicBagOption[];
   passengers: OfferPassenger[];
   labels: Map<string, string>;
   segments: Segment[];
@@ -67,7 +67,7 @@ export function BaggageSection({
                   <option value="">{messages.booking.noBag}</option>
                   {g.options.map((o) => (
                     <option key={o.serviceId} value={o.serviceId}>
-                      {messages.booking.bagOption(o.label, formatMoney(o.price))}
+                      {messages.booking.bagOption(o.label, formatMoney(o.displayPrice))}
                     </option>
                   ))}
                 </NativeSelect>

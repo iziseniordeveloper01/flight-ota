@@ -57,9 +57,9 @@ export function activeFilterCount(f: OfferFilters): number {
   );
 }
 
-/** Single currency of the result set, or null when mixed (then price filtering is disabled). */
+/** Single display currency of the result set (always the charge currency, INR); null only when empty. */
 export function singleCurrency(offers: PublicFlightOffer[]): string | null {
-  const set = new Set(offers.map((o) => o.price.total.currency));
+  const set = new Set(offers.map((o) => o.displayPrice.total.currency));
   return set.size === 1 ? [...set][0] : null;
 }
 
@@ -72,7 +72,7 @@ export function applyFilters(offers: PublicFlightOffer[], f: OfferFilters): Publ
     // Unknown (null) refundability is excluded: we only promise what the airline confirmed.
     if (f.refundableOnly && o.refundable !== true) return false;
     if (priceActive) {
-      const minor = moneyToMinor(o.price.total);
+      const minor = moneyToMinor(o.displayPrice.total);
       if (f.priceMin !== null && minor < f.priceMin) return false;
       if (f.priceMax !== null && minor > f.priceMax) return false;
     }
@@ -109,13 +109,13 @@ export function filterFacets(offers: PublicFlightOffer[]): FilterFacets {
       minPrice: null,
     };
     a.count += 1;
-    if (currency && (a.minPrice === null || compareMoney(o.price.total, a.minPrice) < 0)) {
-      a.minPrice = o.price.total;
+    if (currency && (a.minPrice === null || compareMoney(o.displayPrice.total, a.minPrice) < 0)) {
+      a.minPrice = o.displayPrice.total;
     }
     airlines.set(o.owner.code, a);
 
     if (currency) {
-      const minor = moneyToMinor(o.price.total);
+      const minor = moneyToMinor(o.displayPrice.total);
       if (min === null || minor < min) min = minor;
       if (max === null || minor > max) max = minor;
     }

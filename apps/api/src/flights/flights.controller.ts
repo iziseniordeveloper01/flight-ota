@@ -7,8 +7,8 @@ import {
   type SearchFlightsResponse,
 } from '@ota/contracts';
 import { ZodValidationPipe } from '../common/zod-validation.pipe.js';
+import { PricingService } from '../pricing/pricing.service.js';
 import { FlightsService } from './flights.service.js';
-import { toPublicOffer } from './public-offer.js';
 
 // Prices are volatile and per-request: every handler sends Cache-Control: no-store
 // (@Header is also applied to error responses, which is what we want here).
@@ -16,9 +16,14 @@ const NO_STORE = ['Cache-Control', 'no-store'] as const;
 
 @Controller('flights')
 export class FlightsController {
-  constructor(private readonly flights: FlightsService) {}
+  constructor(
+    private readonly flights: FlightsService,
+    private readonly pricing: PricingService,
+  ) {}
 
   // POST because the search has a structured body; it creates nothing, so 200 not 201.
+  // Offers carry `displayPrice` (charge currency) and are sorted by it; 503 FX_UNAVAILABLE when a
+  // supplier currency can't be converted.
   @Post('search')
   @HttpCode(200)
   @Header(...NO_STORE)
@@ -27,12 +32,13 @@ export class FlightsController {
   ): Promise<SearchFlightsResponse> {
     const { offers, cached, currency } = await this.flights.search(body);
     return {
-      data: offers.map(toPublicOffer),
+      data: await this.pricing.publicOffers(offers),
       meta: {
         supplier: this.flights.supplier,
         cached,
         count: offers.length,
         currency,
+        displayCurrency: this.pricing.chargeCurrency,
         demo: this.isDemo(),
       },
     };
@@ -46,7 +52,7 @@ export class FlightsController {
   ): Promise<OfferResponse> {
     const offer = await this.flights.getOffer(id);
     return {
-      data: toPublicOffer(offer),
+      data: await this.pricing.publicPricedOffer(offer),
       meta: { supplier: this.flights.supplier, demo: this.isDemo() },
     };
   }

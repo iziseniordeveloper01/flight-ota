@@ -8,6 +8,9 @@ import type {
   BookingResponse,
   CreateBookingResponse,
   OfferResponse,
+  PaymentOrderResponse,
+  PaymentVerifyBody,
+  PaymentVerifyResponse,
   SeatMapsResponse,
   UpdateBookingDetailsInput,
   UpdateBookingDetailsResponse,
@@ -15,6 +18,7 @@ import type {
   SearchFlightsResponse,
   ValidationIssue,
 } from '@ota/contracts';
+import { CHARGE_CURRENCY } from '@ota/contracts';
 import { env } from '@/env';
 import { messages } from './messages';
 
@@ -137,7 +141,8 @@ export const api = {
     return request<SearchFlightsResponse>(`${env.NEXT_PUBLIC_API_URL}/flights/search`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
+      // A hint only: suppliers that honour it price in INR directly; the API converts the rest.
+      body: JSON.stringify({ ...body, currency: body.currency ?? CHARGE_CURRENCY }),
       signal,
       timeoutMs: FLIGHT_TIMEOUT_MS,
     });
@@ -198,5 +203,20 @@ export const bookingApi = {
   /** 200 settled, 202 still CONFIRMING (poll `get`). Both resolve with the booking. */
   confirmDemo(id: string): Promise<BookingResponse> {
     return request(bookingUrl(id, 'confirm-demo'), { method: 'POST', timeoutMs: CONFIRM_TIMEOUT_MS });
+  },
+
+  /** A new provider order for this booking (amount decided by the server). */
+  paymentOrder(id: string): Promise<PaymentOrderResponse> {
+    return request(bookingUrl(id, 'payment-order'), { method: 'POST', timeoutMs: BOOKING_TIMEOUT_MS });
+  },
+
+  /** Checkout's success response → 202 { status } (ticketing continues; poll `get`). */
+  paymentVerify(id: string, body: PaymentVerifyBody): Promise<PaymentVerifyResponse> {
+    return request(bookingUrl(id, 'payment-verify'), {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(body),
+      timeoutMs: BOOKING_TIMEOUT_MS,
+    });
   },
 };

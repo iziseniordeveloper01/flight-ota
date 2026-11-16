@@ -7,7 +7,8 @@ const repoRoot = new URL('../..', import.meta.url).pathname.replace(/^\/([A-Za-z
 
 export default defineConfig({
   testDir: './e2e',
-  testIgnore: ['**/screenshots.spec.ts'], // manual run: playwright.screenshots.config.ts
+  // screenshots: manual run (playwright.screenshots.config.ts); payments: own servers (playwright.payments.config.ts)
+  testIgnore: ['**/screenshots.spec.ts', '**/payments.spec.ts'],
   fullyParallel: false,
   retries: 0,
   reporter: [['list']],
@@ -43,6 +44,11 @@ export default defineConfig({
         WEB_ORIGIN: `http://localhost:${WEB_PORT}`,
         // Local docker-compose Redis (127.0.0.1:6379, see docker-compose.yml), dedicated DB 15.
         REDIS_URL: 'redis://127.0.0.1:6379/15',
+        // The demo flow (confirm-demo, no money), whatever PAYMENT_PROVIDER says in .env. Ticketing
+        // runs inline for demo, so no workers are needed.
+        PAYMENT_PROVIDER: 'demo',
+        WORKERS_ENABLED: 'false',
+        QUEUE_PREFIX: 'e2e-pw',
       },
       reuseExistingServer: false,
       timeout: 180_000,

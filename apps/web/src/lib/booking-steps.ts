@@ -9,7 +9,7 @@ export const tripSummaryPath = (offerId: string) => `/flights/confirm?${new URLS
 
 /**
  * Which page shows a booking in this status. Step 1 also shows EXPIRED (blocking dialog); the review
- * page also shows CONFIRMING (polling) and FAILED (failure message).
+ * page also shows PAID/CONFIRMING (polling) and FAILED/REFUND_PENDING/REFUNDED (failure + refund).
  */
 export function stepPathFor(id: string, status: BookingStatus): string {
   switch (status) {
@@ -17,8 +17,11 @@ export function stepPathFor(id: string, status: BookingStatus): string {
     case 'EXPIRED':
       return bookingPath(id);
     case 'PENDING_PAYMENT':
+    case 'PAID':
     case 'CONFIRMING':
     case 'FAILED':
+    case 'REFUND_PENDING':
+    case 'REFUNDED':
       return reviewPath(id);
     case 'CONFIRMED':
     case 'CANCELLED':

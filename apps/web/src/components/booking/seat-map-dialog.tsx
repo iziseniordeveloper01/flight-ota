@@ -1,6 +1,6 @@
 'use client';
 
-import type { OfferPassenger, SeatMap, Segment } from '@ota/contracts';
+import type { OfferPassenger, PublicSeatMap, Segment } from '@ota/contracts';
 import { useState, type ReactNode } from 'react';
 import { ErrorState } from '@/components/results/result-states';
 import { Button } from '@/components/ui/button';
@@ -23,7 +23,7 @@ interface Props {
   initialSegmentRef?: string;
   passengers: OfferPassenger[];
   labels: Map<string, string>;
-  maps: SeatMap[] | undefined;
+  maps: PublicSeatMap[] | undefined;
   loading: boolean;
   error: unknown;
   onRetry: () => void;

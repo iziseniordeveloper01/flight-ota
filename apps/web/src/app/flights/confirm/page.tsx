@@ -14,14 +14,10 @@ import { airportNames, getOfferForPage } from '@/server/booking-api';
 
 export const metadata: Metadata = { title: messages.trip.title, robots: { index: false, follow: false } };
 
+// Only the charge-currency (INR) total is shown: the supplier's base/taxes split is in its own
+// currency, and converting each part separately would not add up to the total charged.
 function priceRows(offer: PublicPricedOffer): PriceRow[] {
-  const { base, taxes, total } = offer.price;
-  return [
-    ...(offer.price.perPassenger ?? []).map((p) => ({ label: `${messages.passengerType[p.type]} × ${p.count}`, amount: p.total })),
-    ...(base ? [{ label: messages.trip.fare, amount: base }] : []),
-    ...(taxes ? [{ label: messages.details.taxes, amount: taxes }] : []),
-    { label: messages.details.total, amount: total, strong: true },
-  ];
+  return [{ label: messages.details.total, amount: offer.displayPrice.total, strong: true }];
 }
 
 export default async function TripSummaryPage({ searchParams }: PageProps<'/flights/confirm'>) {
@@ -56,7 +52,7 @@ export default async function TripSummaryPage({ searchParams }: PageProps<'/flig
         {result.meta.demo && <DemoNote>{messages.booking.demoNote}</DemoNote>}
         {offer.priceChanged && offer.previousTotal && (
           <output className="block rounded-lg bg-warning p-3 font-medium text-warning-foreground">
-            {messages.details.priceUpdated(formatMoney(offer.previousTotal), formatMoney(offer.price.total))}
+            {messages.details.priceUpdated(formatMoney(offer.displayPrice.previousTotal ?? offer.previousTotal), formatMoney(offer.displayPrice.total))}
           </output>
         )}
       </div>
@@ -88,7 +84,7 @@ export default async function TripSummaryPage({ searchParams }: PageProps<'/flig
       <div className="fixed inset-x-0 bottom-0 z-30 border-t bg-card px-4 py-3 shadow-[0_-4px_16px_rgb(0_0_0/0.06)] lg:hidden">
         <div className="mx-auto flex max-w-6xl items-center gap-3">
           <div className="min-w-0 flex-1">
-            <p className="text-lg font-bold tabular-nums">{formatMoney(offer.price.total)}</p>
+            <p className="text-lg font-bold tabular-nums">{formatMoney(offer.displayPrice.total)}</p>
             <p className="text-xs text-muted-foreground">{messages.offer.totalFor(travellers)}</p>
           </div>
           <CheckoutButton offerId={offer.id} searchUrl={searchUrl} className="w-44" />

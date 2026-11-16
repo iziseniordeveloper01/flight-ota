@@ -1,4 +1,4 @@
-import type { CabinClass, FlightOffer, PricedOffer, SupplierName } from '@ota/suppliers';
+import type { CabinClass, FlightOffer, Money, PricedOffer, SupplierName } from '@ota/suppliers';
 import { z } from 'zod';
 
 export const MAX_DAYS_AHEAD = 361; // airlines publish schedules ~11–12 months out
@@ -89,20 +89,38 @@ export const offerIdSchema = z
   .string()
   .regex(/^(mock|duffel|tbo):[A-Za-z0-9_-]{1,256}$/, 'Malformed offer id');
 
-/** An offer as it leaves the API: server-only `supplierRef` removed. */
-export type PublicOffer<T extends FlightOffer = FlightOffer> = Omit<T, 'supplierRef'>;
+/** The currency customers are charged in (the API's CHARGE_CURRENCY). */
+export const CHARGE_CURRENCY = 'INR';
+
+/**
+ * What the customer pays, in the charge currency: the supplier amount converted at
+ * rate × (1 + FX buffer), rounded UP to the whole unit (same currency: passed through exactly),
+ * plus markup on the fare. The web shows only these; `price` stays the supplier's own.
+ */
+export interface OfferDisplayPrice {
+  total: Money;
+  /** Re-priced offers: the previous total in the charge currency, when the price changed. */
+  previousTotal?: Money;
+}
+
+/** An offer as stored server-side for a booking: server-only `supplierRef` removed. */
+export type SupplierOffer<T extends FlightOffer = FlightOffer> = Omit<T, 'supplierRef'>;
+/** An offer as it leaves the API: `supplierRef` removed, `displayPrice` (charge currency) added. */
+export type PublicOffer<T extends FlightOffer = FlightOffer> = SupplierOffer<T> & { displayPrice: OfferDisplayPrice };
 export type PublicFlightOffer = PublicOffer<FlightOffer>;
 export type PublicPricedOffer = PublicOffer<PricedOffer>;
 
-/** POST /v1/flights/search */
+/** POST /v1/flights/search — sorted by displayPrice. */
 export interface SearchFlightsResponse {
   data: PublicFlightOffer[];
   meta: {
     supplier: SupplierName;
     cached: boolean;
     count: number;
-    /** null when offers come back in more than one currency (then they stay in supplier order). */
+    /** Supplier currency shared by all offers; null when mixed. */
     currency: string | null;
+    /** Currency of every `displayPrice`. */
+    displayCurrency: string;
     /** Test inventory (mock / Duffel test mode): not bookable. */
     demo: boolean;
   };

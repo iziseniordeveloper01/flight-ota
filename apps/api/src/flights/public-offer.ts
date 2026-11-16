@@ -1,11 +1,11 @@
-import type { PublicOffer } from '@ota/contracts';
+import type { SupplierOffer } from '@ota/contracts';
 import type { FlightOffer } from '@ota/suppliers';
 
 /**
- * Strip server-only supplier context (booking tokens, passenger ids) before an offer leaves the
- * API. Every endpoint that returns offers must go through this.
+ * Strip server-only supplier context (booking tokens, passenger ids). Every offer that leaves the
+ * API goes through this — via PricingService.publicOffers(), which also adds `displayPrice`.
  */
-export function toPublicOffer<T extends FlightOffer>(offer: T): PublicOffer<T> {
+export function toPublicOffer<T extends FlightOffer>(offer: T): SupplierOffer<T> {
   const { supplierRef: _supplierRef, ...rest } = offer;
   return rest;
 }

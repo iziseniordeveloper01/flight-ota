@@ -4,10 +4,13 @@ import { ConfigModule } from '@nestjs/config';
 import { validateEnv } from './config/env.js';
 import { RedisModule } from './redis/redis.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { QueuesModule } from './queues/queues.module.js';
 import { HealthModule } from './health/health.module.js';
 import { AirportsModule } from './airports/airports.module.js';
 import { FlightsModule } from './flights/flights.module.js';
 import { BookingsModule } from './bookings/bookings.module.js';
+import { PaymentsModule } from './payments/payments.module.js';
+import { EmailModule } from './email/email.module.js';
 
 @Module({
   imports: [
@@ -23,11 +26,13 @@ import { BookingsModule } from './bookings/bookings.module.js';
     // Infrastructure (global providers) first, then feature modules.
     RedisModule,
     PrismaModule,
+    QueuesModule,
     HealthModule,
     AirportsModule,
     FlightsModule,
     BookingsModule,
-    // Next steps will add: AuthModule, PaymentsModule ...
+    PaymentsModule,
+    EmailModule,
   ],
 })
 export class AppModule {}

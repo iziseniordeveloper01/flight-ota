@@ -18,7 +18,7 @@ describe('OfferCard', () => {
 
   it('labels the total for multiple travellers', () => {
     render(<OfferCard offer={offer({ amount: '402.00' })} travellers={3} onSelect={() => {}} />);
-    expect(screen.getByText('$402.00')).toBeInTheDocument();
+    expect(screen.getByText('₹402.00')).toBeInTheDocument(); // the INR display price
     expect(screen.getByText('· total for 3 travellers')).toBeInTheDocument();
   });
 

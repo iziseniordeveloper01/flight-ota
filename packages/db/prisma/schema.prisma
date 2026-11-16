@@ -83,11 +83,14 @@ model Airline {
 enum BookingStatus {
   DRAFT
   PENDING_PAYMENT
+  PAID
   CONFIRMING
   CONFIRMED
   FAILED
   EXPIRED
   CANCELLED
+  REFUND_PENDING
+  REFUNDED
 }
 
 enum BookingActor {
@@ -126,6 +129,9 @@ enum AncillaryType {
 }
 
 // Money: Decimal(14,3) so 3-decimal currencies (KWD, BHD) fit; read back with currencyDigits().
+// Two sides: the SUPPLIER's amounts (currency/fare/ancillaries/total — what the airline charges us)
+// and the CHARGE amounts (charge* — what the customer pays us, in CHARGE_CURRENCY) with the FX
+// snapshot that links them. Charge columns are null only on rows created before payments existed.
 model Booking {
   id                    String             @id @default(uuid(7)) @db.Uuid
   // Public, customer-facing: 8 chars from an alphabet without 0/O/1/I
@@ -140,8 +146,20 @@ model Booking {
   currency              String             @db.Char(3)
   fareAmount            Decimal            @map("fare_amount") @db.Decimal(14, 3)
   ancillariesAmount     Decimal            @default(0) @map("ancillaries_amount") @db.Decimal(14, 3)
-  insuranceAmount       Decimal            @default(0) @map("insurance_amount") @db.Decimal(14, 3)
+  // Supplier total: fare + bags/seats (insurance is ours, not the airline's — see chargeInsuranceAmount)
   totalAmount           Decimal            @map("total_amount") @db.Decimal(14, 3)
+  chargeCurrency        String?            @map("charge_currency") @db.Char(3)
+  chargeFareAmount      Decimal?           @map("charge_fare_amount") @db.Decimal(14, 3) // incl. markup
+  chargeMarkupAmount    Decimal?           @map("charge_markup_amount") @db.Decimal(14, 3)
+  chargeBagsAmount      Decimal?           @map("charge_bags_amount") @db.Decimal(14, 3)
+  chargeSeatsAmount     Decimal?           @map("charge_seats_amount") @db.Decimal(14, 3)
+  chargeInsuranceAmount Decimal?           @map("charge_insurance_amount") @db.Decimal(14, 3)
+  chargeTotalAmount     Decimal?           @map("charge_total_amount") @db.Decimal(14, 3)
+  // FX snapshot: supplier currency → charge currency (rate 1 / buffer 0 when they are the same)
+  fxRate                Decimal?           @map("fx_rate") @db.Decimal(18, 8)
+  fxBufferPercent       Decimal?           @map("fx_buffer_percent") @db.Decimal(5, 2)
+  fxSource              String?            @map("fx_source") @db.VarChar(40)
+  fxFetchedAt           DateTime?          @map("fx_fetched_at") @db.Timestamptz(3)
   // Contact is filled by PUT details; null while the booking is a fresh draft
   contactTitle          PassengerTitle?    @map("contact_title")
   contactGivenName      String?            @map("contact_given_name")
@@ -167,6 +185,7 @@ model Booking {
   passengers  BookingPassenger[]
   ancillaries BookingAncillary[]
   events      BookingEvent[]
+  payments    Payment[]
 
   // Manage-booking lookup (email + reference)
   @@index([contactEmail, reference])
@@ -215,6 +234,8 @@ model BookingAncillary {
   quantity          Int
   amount            Decimal       @db.Decimal(14, 3) // line total (unit price × quantity)
   currency          String        @db.Char(3)
+  // The same line in the booking's charge currency (insurance: equal to amount, it is quoted in it)
+  chargeAmount      Decimal?      @map("charge_amount") @db.Decimal(14, 3)
 
   booking   Booking           @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   passenger BookingPassenger? @relation(fields: [passengerId], references: [id], onDelete: Cascade)
@@ -238,4 +259,102 @@ model BookingEvent {
 
   @@index([bookingId, createdAt])
   @@map("booking_events")
+}
+
+// ------------------------------------------------------------------------------------------------
+// Payments (Razorpay). Amounts are what WE computed from the booking, never what a client sent.
+
+enum PaymentStatus {
+  CREATED // provider order created, customer not (yet) paid
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUND_PENDING
+  REFUNDED
+  REFUND_FAILED
+}
+
+enum RefundStatus {
+  PENDING // requested (or not yet accepted by the provider)
+  PROCESSED
+  FAILED
+}
+
+// One row per payment attempt (provider order). At most one CAPTURED per booking — enforced by
+// markPaid() under the booking row lock; a second captured payment is refunded.
+model Payment {
+  id                String        @id @default(uuid(7)) @db.Uuid
+  bookingId         String        @map("booking_id") @db.Uuid
+  attempt           Int // 1, 2, … per booking (part of the provider receipt)
+  provider          String        @db.VarChar(20)
+  providerOrderId   String        @unique @map("provider_order_id") @db.VarChar(64)
+  providerPaymentId String?       @unique @map("provider_payment_id") @db.VarChar(64)
+  amount            Decimal       @db.Decimal(14, 3)
+  currency          String        @db.Char(3)
+  status            PaymentStatus @default(CREATED)
+  method            String?       @db.VarChar(20) // card | upi | netbanking | wallet …
+  failureCode       String?       @map("failure_code") @db.VarChar(64)
+  failureReason     String?       @map("failure_reason") @db.VarChar(255)
+  capturedAt        DateTime?     @map("captured_at") @db.Timestamptz(3)
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  refunds Refund[]
+
+  @@unique([bookingId, attempt])
+  // Reconciliation: recent CREATED attempts
+  @@index([status, createdAt])
+  @@map("payments")
+}
+
+model Refund {
+  id               String       @id @default(uuid(7)) @db.Uuid // also the provider idempotency key
+  paymentId        String       @map("payment_id") @db.Uuid
+  providerRefundId String?      @unique @map("provider_refund_id") @db.VarChar(64)
+  amount           Decimal      @db.Decimal(14, 3)
+  currency         String       @db.Char(3)
+  status           RefundStatus @default(PENDING)
+  reason           String       @db.VarChar(64) // machine code: BOOKING_FAILED, LATE_PAYMENT, DUPLICATE_PAYMENT
+  createdAt        DateTime     @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt        DateTime     @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  payment Payment @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  @@index([status, createdAt])
+  @@map("refunds")
+}
+
+// Webhook dedupe + audit. Deliberately NO raw payload: provider entities carry email/phone.
+model WebhookEvent {
+  id          String    @id @default(uuid(7)) @db.Uuid
+  provider    String    @db.VarChar(20)
+  eventId     String    @unique @map("event_id") @db.VarChar(64) // x-razorpay-event-id
+  type        String    @db.VarChar(64)
+  // Only the ids/amount/status we act on
+  orderId     String?   @map("order_id") @db.VarChar(64)
+  paymentId   String?   @map("payment_id") @db.VarChar(64)
+  refundId    String?   @map("refund_id") @db.VarChar(64)
+  amountMinor BigInt?   @map("amount_minor")
+  currency    String?   @db.Char(3)
+  status      String?   @db.VarChar(20)
+  errorCode   String?   @map("error_code") @db.VarChar(64)
+  receivedAt  DateTime  @default(now()) @map("received_at") @db.Timestamptz(3)
+  processedAt DateTime? @map("processed_at") @db.Timestamptz(3)
+  outcome     String?   @db.VarChar(64)
+
+  @@map("webhook_events")
+}
+
+// Every rate we fetched (history + fallback when the FX API is down).
+model FxRate {
+  id        String   @id @default(uuid(7)) @db.Uuid
+  base      String   @db.Char(3)
+  quote     String   @db.Char(3)
+  rate      Decimal  @db.Decimal(18, 8)
+  source    String   @db.VarChar(40)
+  fetchedAt DateTime @default(now()) @map("fetched_at") @db.Timestamptz(3)
+
+  @@index([base, quote, fetchedAt])
+  @@map("fx_rates")
 }

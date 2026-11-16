@@ -2,6 +2,7 @@ import {
   ageOnDate,
   passengerTypeForAge,
   PASSPORT_WARNING_MONTHS,
+  type BookingDisplayPrice,
   type BookingIssue,
   type BookingPrice,
   type BookingWarning,
@@ -204,16 +205,24 @@ export function priceServices(
   return { lines, issues };
 }
 
-/** Fare + add-ons + insurance, decimal-exact in the booking currency (throws on a currency mismatch). */
-export function bookingTotals(fare: Money, addOns: Money[], insurance: Money | null): BookingPrice {
+/** Supplier side: fare + bags/seats, decimal-exact in the supplier currency (throws on a mismatch). */
+export function supplierTotals(fare: Money, addOns: Money[]): BookingPrice {
   const { currency } = fare;
   const ancillaries = sumMoney(addOns, currency);
-  const insuranceAmount = insurance ?? sumMoney([], currency);
-  return {
-    currency,
-    fare,
-    ancillaries,
-    insurance: insuranceAmount,
-    total: sumMoney([fare, ancillaries, insuranceAmount], currency),
-  };
+  return { currency, fare, ancillaries, total: sumMoney([fare, ancillaries], currency) };
+}
+
+/**
+ * Charge side (what the customer pays): every line is already converted and rounded, so the total
+ * is exactly the sum of what is shown. Throws on a currency mismatch.
+ */
+export function chargeTotals(
+  currency: string,
+  lines: { fare: Money; bags: Money[]; seats: Money[]; insurance: Money | null },
+): BookingDisplayPrice {
+  const baggage = sumMoney(lines.bags, currency);
+  const seats = sumMoney(lines.seats, currency);
+  const insurance = sumMoney(lines.insurance ? [lines.insurance] : [], currency);
+  const fare = sumMoney([lines.fare], currency);
+  return { currency, fare, baggage, seats, insurance, total: sumMoney([fare, baggage, seats, insurance], currency) };
 }

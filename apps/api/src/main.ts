@@ -5,7 +5,8 @@ import { AppModule } from './app.module.js';
 import { configureApp } from './app.setup.js';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule);
+  // rawBody: webhook signatures are verified over the exact bytes received (req.rawBody).
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   configureApp(app);
 
   const port = app.get(ConfigService).getOrThrow<number>('PORT');

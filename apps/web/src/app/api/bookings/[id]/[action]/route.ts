@@ -10,8 +10,12 @@ const ACTIONS = {
   details: 'PUT',
   checkout: 'POST',
   'confirm-demo': 'POST',
+  'payment-order': 'POST',
+  'payment-verify': 'POST',
 } as const;
 type Action = keyof typeof ACTIONS;
+// Actions whose JSON body is passed through (validated by the API with the contract schema).
+const WITH_BODY: ReadonlySet<Action> = new Set(['details', 'payment-verify']);
 
 // Confirming can take ~2 minutes at the airline.
 export const maxDuration = 180;
@@ -23,8 +27,9 @@ async function handle(request: NextRequest, { params }: RouteContext<'/api/booki
   const forbidden = rejectCrossOrigin(request);
   if (forbidden) return forbidden;
 
+  const withBody = WITH_BODY.has(action as Action);
   const headers: Record<string, string> = {};
-  if (request.method === 'PUT') headers['Content-Type'] = 'application/json';
+  if (withBody) headers['Content-Type'] = 'application/json';
   // Generated here, never by the browser: the same booking always confirms with the same key.
   if (action === 'confirm-demo') headers['Idempotency-Key'] = confirmIdempotencyKey(id);
 
@@ -32,7 +37,7 @@ async function handle(request: NextRequest, { params }: RouteContext<'/api/booki
     const res = await bookingFetch(id, `/${action as Action}`, {
       method: request.method,
       headers,
-      body: request.method === 'PUT' ? await request.text() : undefined,
+      body: withBody ? await request.text() : undefined,
       timeoutMs: action === 'confirm-demo' ? CONFIRM_TIMEOUT_MS : undefined,
     });
     return res ? passThrough(res) : bookingNotFound();

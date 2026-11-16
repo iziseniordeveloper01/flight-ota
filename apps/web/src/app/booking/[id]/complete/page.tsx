@@ -40,6 +40,7 @@ export default async function CompletePage({ params }: PageProps<'/booking/[id]/
             </dd>
           </div>
         </dl>
+        {booking.contact && <p data-testid="emailed">{messages.complete.emailed(booking.contact.email)}</p>}
         <p className="text-sm text-muted-foreground">{messages.complete.saveReferences}</p>
         {booking.demo && <DemoNote>{messages.complete.demo}</DemoNote>}
       </section>

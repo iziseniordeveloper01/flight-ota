@@ -1,4 +1,4 @@
-import type { OfferPassenger, SeatMap } from '@ota/contracts';
+import type { OfferPassenger, PublicSeatMap } from '@ota/contracts';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
@@ -7,11 +7,11 @@ import { SeatGrid } from './seat-grid';
 
 const usd = (amount: string) => ({ amount, currency: 'USD' });
 const services = (designator: string, amount: string) => [
-  { passengerRef: 'a1', serviceId: `${designator}-a1`, price: usd(amount) },
-  { passengerRef: 'a2', serviceId: `${designator}-a2`, price: usd(amount) },
+  { passengerRef: 'a1', serviceId: `${designator}-a1`, price: usd(amount), displayPrice: usd(amount) },
+  { passengerRef: 'a2', serviceId: `${designator}-a2`, price: usd(amount), displayPrice: usd(amount) },
 ];
 
-const MAP: SeatMap = {
+const MAP: PublicSeatMap = {
   segmentRef: 'seg1',
   cabins: [
     {

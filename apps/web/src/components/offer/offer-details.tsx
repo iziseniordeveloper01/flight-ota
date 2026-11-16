@@ -105,7 +105,7 @@ function Details({
         {priced?.priceChanged && priced.previousTotal && (
           <div className="rounded-lg bg-warning p-3 text-warning-foreground">
             <p className="font-medium">
-              {messages.details.priceUpdated(formatMoney(priced.previousTotal), formatMoney(priced.price.total))}
+              {messages.details.priceUpdated(formatMoney(priced.displayPrice.previousTotal ?? priced.previousTotal), formatMoney(priced.displayPrice.total))}
             </p>
           </div>
         )}
@@ -117,7 +117,7 @@ function Details({
         )}
         {priced && (
           <PriceLabel
-            total={priced.price.total}
+            total={priced.displayPrice.total}
             travellers={travellers}
             className="mt-2"
             amountClassName={priced.priceChanged ? 'rounded bg-accent px-1.5 text-2xl text-accent-foreground' : 'text-2xl'}
@@ -184,12 +184,8 @@ function Details({
             {messages.details.priceBreakdown}
           </h3>
           <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-sm">
-            {priced.price.perPassenger?.map((p) => (
-              <Row key={p.type} label={`${messages.passengerType[p.type]} × ${p.count}`} value={formatMoney(p.total)} />
-            ))}
-            {priced.price.base && <Row label={messages.details.base} value={formatMoney(priced.price.base)} />}
-            {priced.price.taxes && <Row label={messages.details.taxes} value={formatMoney(priced.price.taxes)} />}
-            <Row label={messages.details.total} value={formatMoney(priced.price.total)} strong />
+            {/* INR total only (the supplier's base/taxes split is in its own currency). */}
+            <Row label={messages.details.total} value={formatMoney(priced.displayPrice.total)} strong />
           </dl>
         </section>
       )}

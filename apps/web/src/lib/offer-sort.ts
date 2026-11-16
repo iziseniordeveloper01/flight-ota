@@ -13,10 +13,10 @@ export function totalDuration(offer: PublicFlightOffer): number {
  * compareMoney throws on mixed currencies, so different currencies are grouped by code first.
  */
 export function comparePrice(a: PublicFlightOffer, b: PublicFlightOffer): number {
-  const ca = a.price.total.currency;
-  const cb = b.price.total.currency;
+  const ca = a.displayPrice.total.currency;
+  const cb = b.displayPrice.total.currency;
   if (ca !== cb) return ca < cb ? -1 : 1;
-  return compareMoney(a.price.total, b.price.total);
+  return compareMoney(a.displayPrice.total, b.displayPrice.total);
 }
 
 /** Returns a new array; Array.prototype.sort is stable, so ties keep supplier order. */

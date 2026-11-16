@@ -2,7 +2,8 @@ import type { PassengerDetails } from '@ota/contracts';
 import type { Ancillaries, SeatMap } from '@ota/suppliers';
 import {
   addMonths,
-  bookingTotals,
+  chargeTotals,
+  supplierTotals,
   buildCatalogue,
   checkPassengers,
   isInternationalTrip,
@@ -136,15 +137,29 @@ describe('services pricing', () => {
   });
 });
 
-describe('bookingTotals', () => {
-  it('adds decimal strings exactly', () => {
-    expect(bookingTotals(usd('0.10'), [usd('0.20'), usd('10.05')], usd('5.00'))).toEqual({
-      currency: 'USD', fare: usd('0.10'), ancillaries: usd('10.25'), insurance: usd('5.00'), total: usd('15.35'),
+describe('supplierTotals', () => {
+  it('adds decimal strings exactly (fare + bags/seats; insurance is not the supplier’s)', () => {
+    expect(supplierTotals(usd('0.10'), [usd('0.20'), usd('10.05')])).toEqual({
+      currency: 'USD', fare: usd('0.10'), ancillaries: usd('10.25'), total: usd('10.35'),
     });
-    expect(bookingTotals(usd('100.00'), [], null)).toMatchObject({ ancillaries: usd('0.00'), insurance: usd('0.00'), total: usd('100.00') });
+    expect(supplierTotals(usd('100.00'), [])).toMatchObject({ ancillaries: usd('0.00'), total: usd('100.00') });
   });
 
   it('throws on a currency mismatch', () => {
-    expect(() => bookingTotals(usd('1.00'), [{ amount: '1.00', currency: 'EUR' }], null)).toThrow(/mismatch/);
+    expect(() => supplierTotals(usd('1.00'), [{ amount: '1.00', currency: 'EUR' }])).toThrow(/mismatch/);
+  });
+});
+
+describe('chargeTotals', () => {
+  const inr = (amount: string) => ({ amount, currency: 'INR' });
+  it('the total is exactly the sum of the lines shown', () => {
+    expect(chargeTotals('INR', { fare: inr('8420.00'), bags: [inr('1890.00'), inr('945.00')], seats: [inr('1260.00')], insurance: inr('252.60') })).toEqual({
+      currency: 'INR', fare: inr('8420.00'), baggage: inr('2835.00'), seats: inr('1260.00'), insurance: inr('252.60'), total: inr('12767.60'),
+    });
+    expect(chargeTotals('INR', { fare: inr('100'), bags: [], seats: [], insurance: null })).toMatchObject({ baggage: inr('0.00'), insurance: inr('0.00'), total: inr('100.00') });
+  });
+
+  it('throws when a line is not in the charge currency', () => {
+    expect(() => chargeTotals('INR', { fare: usd('1.00'), bags: [], seats: [], insurance: null })).toThrow(/mismatch/);
   });
 });

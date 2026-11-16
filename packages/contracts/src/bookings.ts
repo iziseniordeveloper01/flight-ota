@@ -1,17 +1,24 @@
-import type { Ancillaries, Money, PassengerType, SeatMap, SupplierName } from '@ota/suppliers';
+import type { Ancillaries, BagOption, Money, PassengerType, SeatMap, SeatMapElement, SeatMapRow, SeatService, SupplierName } from '@ota/suppliers';
 import { z } from 'zod';
 import { offerIdSchema, type PublicFlightOffer } from './flights.js';
 
 export const BOOKING_STATUSES = [
   'DRAFT',
   'PENDING_PAYMENT',
+  'PAID',
   'CONFIRMING',
   'CONFIRMED',
   'FAILED',
   'EXPIRED',
   'CANCELLED',
+  'REFUND_PENDING',
+  'REFUNDED',
 ] as const;
 export type BookingStatus = (typeof BOOKING_STATUSES)[number];
+
+/** demo = no real payment (confirm-demo); fake = in-process test double (NODE_ENV=test only). */
+export const PAYMENT_PROVIDERS = ['demo', 'razorpay', 'fake'] as const;
+export type PaymentProviderName = (typeof PAYMENT_PROVIDERS)[number];
 
 export const PASSENGER_TITLES = ['mr', 'mrs', 'ms', 'miss'] as const;
 export const GENDERS = ['m', 'f'] as const;
@@ -181,17 +188,52 @@ export const updateBookingDetailsSchema = z
 export type UpdateBookingDetailsBody = z.output<typeof updateBookingDetailsSchema>;
 export type UpdateBookingDetailsInput = z.input<typeof updateBookingDetailsSchema>;
 
+/**
+ * POST /v1/bookings/:id/payment-verify — Razorpay Checkout's success handler response, as is.
+ * The server checks the signature against ITS OWN order id and re-fetches the payment.
+ */
+export const paymentVerifySchema = z.object({
+  razorpay_payment_id: z.string().regex(/^pay_[A-Za-z0-9]{1,40}$/, 'Malformed payment id'),
+  razorpay_order_id: z.string().regex(/^order_[A-Za-z0-9]{1,40}$/, 'Malformed order id'),
+  razorpay_signature: z.string().regex(/^[a-f0-9]{64}$/, 'Malformed signature'),
+});
+export type PaymentVerifyBody = z.output<typeof paymentVerifySchema>;
+
 // ---------------------------------------------------------------------------------------------
 // Public response types
 
+/** The SUPPLIER's amounts (what the airline charges), in the supplier's currency. */
 export interface BookingPrice {
   currency: string;
   /** Flight fare from the latest re-price. */
   fare: Money;
   /** Bags + seats. */
   ancillaries: Money;
+  /** fare + ancillaries. */
+  total: Money;
+}
+
+/**
+ * What the customer pays, in the charge currency (INR). Each line is converted on its own (rounded
+ * up), so `total` is exactly the sum of the lines shown. Insurance is quoted in this currency.
+ */
+export interface BookingDisplayPrice {
+  currency: string;
+  /** Fare incl. markup. */
+  fare: Money;
+  baggage: Money;
+  seats: Money;
   insurance: Money;
   total: Money;
+}
+
+export type RefundStatusName = 'pending' | 'processed' | 'failed';
+
+export interface BookingPayment {
+  /** demo → confirm-demo; razorpay/fake → payment-order + payment-verify. */
+  provider: PaymentProviderName;
+  /** Set once a refund was started for this booking (failed or late booking). */
+  refund: { amount: Money; status: RefundStatusName } | null;
 }
 
 export interface PublicBookingPassenger {
@@ -217,7 +259,10 @@ export interface PublicBookingAncillary {
   /** e.g. "1 × 23kg checked bag", "Seat 14C". */
   label: string;
   quantity: number;
+  /** Supplier currency (insurance: charge currency). */
   amount: Money;
+  /** Charge currency. */
+  displayAmount: Money;
 }
 
 export interface InsuranceQuote {
@@ -246,7 +291,7 @@ export interface PublicBooking {
   supplier: SupplierName;
   /** Test inventory (mock / Duffel test mode). */
   demo: boolean;
-  /** The offer as priced at the last re-price (draft creation or checkout). */
+  /** The offer as priced at the last re-price (draft creation or checkout); displayPrice = the fare. */
   offer: PublicFlightOffer;
   /** Every airport in `offer` we know, by IATA code (unknown codes are absent). */
   airports: Record<string, BookingAirport>;
@@ -257,6 +302,8 @@ export interface PublicBooking {
   /** Offer expiry: the booking must be confirmed before this (ISO 8601). */
   expiresAt: string;
   price: BookingPrice;
+  displayPrice: BookingDisplayPrice;
+  payment: BookingPayment;
   contact: {
     title: (typeof PASSENGER_TITLES)[number];
     givenName: string;
@@ -304,7 +351,19 @@ export type BookingErrorCode =
   | 'BOOKING_EXPIRED'
   /** 410 (also from /flights/offers/:id): the fare can't be booked any more — search again. */
   | 'FARE_NO_LONGER_AVAILABLE'
-  | 'SUPPLIER_ERROR';
+  | 'SUPPLIER_ERROR'
+  /** 410: the offer expires too soon to pay safely. */
+  | 'PAYMENT_WINDOW_CLOSED'
+  /** 429: too many payment attempts on one booking. */
+  | 'TOO_MANY_PAYMENT_ATTEMPTS'
+  /** 400: signature / order / amount check failed. */
+  | 'PAYMENT_VERIFICATION_FAILED'
+  /** 400: the payment is not (yet) captured (e.g. failed or still pending at the bank). */
+  | 'PAYMENT_NOT_CAPTURED'
+  /** 502/504: the payment provider failed or timed out. */
+  | 'PAYMENT_PROVIDER_ERROR'
+  /** 503 (also from /flights): no usable exchange rate right now. */
+  | 'FX_UNAVAILABLE';
 
 export interface BookingIssue {
   code: BookingErrorCode;
@@ -317,17 +376,48 @@ export interface BookingErrorBody {
   code: BookingErrorCode;
   message: string;
   issues?: BookingIssue[];
-  /** PRICE_CHANGED */
+  /** PRICE_CHANGED — charge currency (what the customer pays). */
   previousTotal?: Money;
   newTotal?: Money;
   /** SERVICE_UNAVAILABLE */
   serviceIds?: string[];
 }
 
-/** POST /v1/bookings → 201. The guest token is returned ONLY here: send it as X-Booking-Token. */
+/**
+ * POST /v1/bookings → 201. The guest token is returned ONLY here: send it as X-Booking-Token.
+ * `previousTotal` (charge currency) = the fare the customer saw, when the fresh one differs.
+ */
 export interface CreateBookingResponse {
   data: PublicBooking;
   meta: { guestToken: string; priceChanged: boolean; previousTotal?: Money };
+}
+
+/** POST /v1/bookings/:id/payment-order → 201: options for the provider's checkout. */
+export interface PaymentOrder {
+  provider: Exclude<PaymentProviderName, 'demo'>;
+  /** Public key id (Razorpay `key`). */
+  keyId: string;
+  orderId: string;
+  /** Computed by the server from the booking. */
+  amount: Money;
+  /** The same in minor units (paise), as checkout wants it. */
+  amountMinor: number;
+  currency: string;
+  /** Brand shown in the checkout. */
+  name: string;
+  description: string;
+  prefill: { name: string; email: string; contact: string };
+  /** Close the checkout before the offer expires. */
+  timeoutSeconds: number;
+}
+
+export interface PaymentOrderResponse {
+  data: PaymentOrder;
+}
+
+/** POST /v1/bookings/:id/payment-verify → 202 (ticketing continues in the background). */
+export interface PaymentVerifyResponse {
+  data: { status: BookingStatus };
 }
 
 /** GET /v1/bookings/:id, POST …/checkout, POST …/confirm-demo (200 / 202 CONFIRMING). */
@@ -345,9 +435,20 @@ export interface UpdateBookingDetailsResponse {
  * Ancillaries as the API serves them: `identityDocumentRequired` is already DECIDED by the server
  * (the supplier's answer, or the international-trip rule when the supplier gives none).
  */
-export type PublicAncillaries = Omit<Ancillaries, 'passengerRequirements'> & {
+export type PublicAncillaries = Omit<Ancillaries, 'passengerRequirements' | 'bags'> & {
+  bags: PublicBagOption[];
   passengerRequirements: { identityDocumentRequired: boolean; maxNameLength: number | null };
 };
+
+/** `displayPrice` = the unit price in the charge currency, at the booking's exchange rate. */
+export type PublicBagOption = BagOption & { displayPrice: Money };
+export type PublicSeatService = SeatService & { displayPrice: Money };
+type SeatElement = Extract<SeatMapElement, { type: 'seat' }>;
+export type PublicSeatMapElement =
+  | Exclude<SeatMapElement, { type: 'seat' }>
+  | (Omit<SeatElement, 'services'> & { services: PublicSeatService[] });
+export type PublicSeatMapRow = Omit<SeatMapRow, 'sections'> & { sections: Array<{ elements: PublicSeatMapElement[] }> };
+export type PublicSeatMap = Omit<SeatMap, 'cabins'> & { cabins: Array<{ deck: number; rows: PublicSeatMapRow[] }> };
 
 /** GET /v1/bookings/:id/ancillaries */
 export interface AncillariesResponse {
@@ -356,5 +457,5 @@ export interface AncillariesResponse {
 
 /** GET /v1/bookings/:id/seat-maps */
 export interface SeatMapsResponse {
-  data: SeatMap[];
+  data: PublicSeatMap[];
 }

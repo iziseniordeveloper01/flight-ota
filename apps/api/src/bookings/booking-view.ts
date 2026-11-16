@@ -1,11 +1,74 @@
-import type { BookingAirport, InsuranceQuote, PublicBooking, PublicFlightOffer } from '@ota/contracts';
+import type {
+  BookingAirport,
+  BookingDisplayPrice,
+  InsuranceQuote,
+  PaymentProviderName,
+  PublicBooking,
+  SupplierOffer,
+} from '@ota/contracts';
 import type { Prisma } from '@ota/db';
-import { currencyDigits, type Money, type SupplierName } from '@ota/suppliers';
+import { currencyDigits, sumMoney, type Money, type SupplierName } from '@ota/suppliers';
+import type { FxSnapshot } from '../pricing/pricing.js';
 import type { BookingWithDetails } from './booking-store.service.js';
 
 /** Decimal column → Money in the currency's own precision ("12.300" → "12.30" for USD). */
 export function toMoney(value: Prisma.Decimal, currency: string): Money {
   return { amount: value.toFixed(currencyDigits(currency)), currency };
+}
+
+/** True once the booking has charge amounts (every booking created since payments exist). */
+export function hasChargeSnapshot(b: BookingWithDetails): b is BookingWithDetails & {
+  chargeCurrency: string;
+  chargeFareAmount: Prisma.Decimal;
+  chargeTotalAmount: Prisma.Decimal;
+} {
+  return b.chargeCurrency !== null && b.chargeFareAmount !== null && b.chargeTotalAmount !== null;
+}
+
+/** The exchange rate stored with the booking (null on rows from before payments existed). */
+export function fxSnapshotOf(b: BookingWithDetails): FxSnapshot | null {
+  if (!b.chargeCurrency || !b.fxRate || !b.fxBufferPercent || !b.fxSource || !b.fxFetchedAt) return null;
+  return {
+    base: b.currency,
+    quote: b.chargeCurrency,
+    rate: b.fxRate.toFixed(),
+    bufferPercent: b.fxBufferPercent.toFixed(),
+    source: b.fxSource,
+    fetchedAt: b.fxFetchedAt.toISOString(),
+  };
+}
+
+/** Booking columns for an FX snapshot. */
+export function fxColumns(fx: FxSnapshot) {
+  return {
+    chargeCurrency: fx.quote,
+    fxRate: fx.rate,
+    fxBufferPercent: fx.bufferPercent,
+    fxSource: fx.source,
+    fxFetchedAt: new Date(fx.fetchedAt),
+  };
+}
+
+/**
+ * What the customer pays, from the stored charge columns. Rows from before payments existed have
+ * none: they show the supplier amounts (and cannot be paid — payment-order answers 409).
+ */
+export function displayPriceOf(b: BookingWithDetails): BookingDisplayPrice {
+  if (!hasChargeSnapshot(b)) {
+    const sum = (type: 'BAG' | 'SEAT') => sumMoney(b.ancillaries.filter((a) => a.type === type).map((a) => toMoney(a.amount, a.currency)), b.currency);
+    const zero = sumMoney([], b.currency);
+    return { currency: b.currency, fare: toMoney(b.fareAmount, b.currency), baggage: sum('BAG'), seats: sum('SEAT'), insurance: zero, total: toMoney(b.totalAmount, b.currency) };
+  }
+  const c = b.chargeCurrency;
+  const money = (value: Prisma.Decimal | null) => (value ? toMoney(value, c) : sumMoney([], c));
+  return {
+    currency: c,
+    fare: money(b.chargeFareAmount),
+    baggage: money(b.chargeBagsAmount),
+    seats: money(b.chargeSeatsAmount),
+    insurance: money(b.chargeInsuranceAmount),
+    total: money(b.chargeTotalAmount),
+  };
 }
 
 /** "X1234567" → "*****567": enough for the customer to recognise it, useless to anyone else. */
@@ -25,11 +88,16 @@ export function toPublicBooking(
     quotes: InsuranceQuote[];
     airports: Record<string, BookingAirport>;
     international: boolean;
+    paymentProvider: PaymentProviderName;
   },
 ): PublicBooking {
   const money = (value: Prisma.Decimal) => toMoney(value, b.currency);
   const refById = new Map(b.passengers.map((p) => [p.id, p.supplierPassengerId]));
   const insurance = b.ancillaries.find((a) => a.type === 'INSURANCE');
+  const displayPrice = displayPriceOf(b);
+  // The latest refund (uuid v7 ids are time-ordered) — what the customer is waiting for.
+  const refund = b.payments.flatMap((p) => p.refunds).sort((x, y) => (x.id < y.id ? -1 : 1)).at(-1);
+  const offer = b.offerSnapshot as unknown as SupplierOffer;
   const contact =
     b.contactTitle && b.contactGivenName && b.contactEmail && b.contactPhone
       ? {
@@ -48,7 +116,7 @@ export function toPublicBooking(
     supplier: b.supplier as SupplierName,
     // Mock and Duffel test mode are not real inventory; only TBO (later) is.
     demo: b.supplier !== 'tbo',
-    offer: b.offerSnapshot as unknown as PublicFlightOffer,
+    offer: { ...offer, displayPrice: { total: displayPrice.fare } },
     airports: ctx.airports,
     trip: { international: ctx.international },
     expiresAt: b.offerExpiresAt.toISOString(),
@@ -56,8 +124,12 @@ export function toPublicBooking(
       currency: b.currency,
       fare: money(b.fareAmount),
       ancillaries: money(b.ancillariesAmount),
-      insurance: money(b.insuranceAmount),
       total: money(b.totalAmount),
+    },
+    displayPrice,
+    payment: {
+      provider: ctx.paymentProvider,
+      refund: refund ? { amount: toMoney(refund.amount, refund.currency), status: lower(refund.status) } : null,
     },
     contact,
     passengers: b.passengers.map((p) => ({
@@ -89,6 +161,7 @@ export function toPublicBooking(
       label: a.label,
       quantity: a.quantity,
       amount: toMoney(a.amount, a.currency),
+      displayAmount: a.chargeAmount && b.chargeCurrency ? toMoney(a.chargeAmount, b.chargeCurrency) : toMoney(a.amount, a.currency),
     })),
     insurance: {
       quotes: ctx.quotes,

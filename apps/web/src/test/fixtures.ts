@@ -55,6 +55,8 @@ export function offer(
     supplierOfferId: `o${seq}`,
     expiresAt: '2026-12-01T00:00:00Z',
     price: { total: { amount: opts.amount ?? '100.00', currency: opts.currency ?? 'USD' } },
+    // Tests compare by display price: same digits, in the charge currency unless one is given.
+    displayPrice: { total: { amount: opts.amount ?? '100.00', currency: opts.currency ?? 'INR' } },
     owner: { code: owner, name: `Airline ${owner}` },
     slices: (opts.slices ?? [{}]).map(slice),
     passengers: [{ ref: 'p1', type: 'adult' }],

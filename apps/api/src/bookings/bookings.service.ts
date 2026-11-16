@@ -9,69 +9,66 @@ import {
   type InsuranceQuote,
   type PublicAncillaries,
   type PublicBooking,
-  type PublicFlightOffer,
+  type PublicSeatMap,
+  type SupplierOffer,
   type UpdateBookingDetailsBody,
 } from '@ota/contracts';
 import type { AncillaryType, BookingStatus, Prisma } from '@ota/db';
 import {
   compareMoney,
   multiplyMoney,
-  SupplierError,
   type Ancillaries,
-  type CreateOrderInput,
   type Money,
   type OfferPassenger,
-  type OrderResult,
   type PricedOffer,
   type SeatMap,
   type SupplierAdapter,
 } from '@ota/suppliers';
-import { Redis } from 'ioredis';
 import { FieldEncryptionService } from '../common/crypto/field-encryption.service.js';
-import { withTimeout } from '../common/with-timeout.js';
 import { FlightsService } from '../flights/flights.service.js';
 import { toPublicOffer } from '../flights/public-offer.js';
-import { callSupplier, FARE_GONE_MESSAGE, fareNoLongerAvailable, logSupplierError } from '../flights/supplier-errors.js';
+import { callSupplier, fareNoLongerAvailable } from '../flights/supplier-errors.js';
 import { SUPPLIER_ADAPTER } from '../flights/supplier.provider.js';
 import { INSURANCE_PROVIDER, type InsuranceProvider } from '../insurance/insurance.provider.js';
+import { PAYMENT_PROVIDER, type PaymentProvider } from '../payments/payment-provider.js';
+import type { PriceQuote } from '../pricing/pricing.js';
+import { PricingService } from '../pricing/pricing.service.js';
 import { JsonCacheService } from '../redis/json-cache.service.js';
-import { REDIS_CLIENT } from '../redis/redis.constants.js';
 import { bookingError, bookingNotFound, rulesViolated } from './booking-errors.js';
 import { withUniqueReference } from './booking-reference.js';
 import {
-  bookingTotals,
   buildCatalogue,
+  chargeTotals,
   checkPassengers,
   isInternationalTrip,
   itineraryAirports,
   priceServices,
+  supplierTotals,
   type CatalogueEntry,
   type RulesPassenger,
 } from './booking-rules.js';
 import { EXPIRABLE, IllegalTransitionError } from './booking-state.js';
 import { BOOKING_DETAILS, BookingStore, isUniqueViolation, TX_OPTIONS, type BookingWithDetails, type Tx } from './booking-store.service.js';
-import { toMoney, toPublicBooking } from './booking-view.js';
+import { displayPriceOf, fxColumns, fxSnapshotOf, hasChargeSnapshot, toMoney, toPublicBooking } from './booking-view.js';
 import { StuckBookingsMonitor } from './stuck-bookings.monitor.js';
+import { TicketingService } from './ticketing.service.js';
 
 const SUPPLIER_TIMEOUT_MS = 30_000;
-// Duffel asks for ≥130s on order creation (airlines can take 120s). Never shorter: a premature
-// abort leaves an order whose outcome we don't know.
-const ORDER_TIMEOUT_MS = 130_000;
-const RECOVERY_TIMEOUT_MS = 15_000;
-// GET may be polled every few seconds while CONFIRMING; ask the supplier at most this often.
-const RECOVERY_THROTTLE_SECONDS = 10;
-const REDIS_TIMEOUT_MS = 200;
 
 const ancillariesKey = (id: string) => `bookings:ancillaries:v1:${id}`;
 const seatMapsKey = (id: string) => `bookings:seat-maps:v1:${id}`;
-const recoveryKey = (id: string) => `bookings:recover:v1:${id}`;
 
 export interface ConfirmResult {
-  /** 200 settled, 202 still CONFIRMING. */
+  /** 200 settled, 202 still PAID/CONFIRMING. */
   httpStatus: HttpStatus.OK | HttpStatus.ACCEPTED;
   booking: PublicBooking;
 }
 
+/**
+ * Guest checkout. Two sides of every price: the SUPPLIER's (what the airline charges, its currency)
+ * and the CHARGE side (what the customer pays, CHARGE_CURRENCY) — converted with the FX snapshot
+ * stored on the booking (taken at creation, refreshed at checkout).
+ */
 @Injectable()
 export class BookingsService {
   private readonly logger = new Logger(BookingsService.name);
@@ -82,9 +79,11 @@ export class BookingsService {
     private readonly crypto: FieldEncryptionService,
     private readonly cache: JsonCacheService,
     private readonly monitor: StuckBookingsMonitor,
+    private readonly pricing: PricingService,
+    private readonly ticketing: TicketingService,
     @Inject(SUPPLIER_ADAPTER) private readonly adapter: SupplierAdapter,
     @Inject(INSURANCE_PROVIDER) private readonly insurance: InsuranceProvider,
-    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    @Inject(PAYMENT_PROVIDER) private readonly payments: PaymentProvider,
   ) {}
 
   // ---------------------------------------------------------------------------------------------
@@ -100,6 +99,9 @@ export class BookingsService {
     // customer saw. 410 FARE_NO_LONGER_AVAILABLE when it's gone.
     const priced = await this.flights.reshop(offerId);
     const total = priced.price.total;
+    const quote = await this.pricing.quote(total.currency);
+    const fare = quote.fare(total);
+    const previousTotal = priced.previousTotal ? await this.pricing.displayFare(priced.previousTotal, quote) : undefined;
     // Shown once, stored only as a hash: whoever holds it can manage this booking.
     const guestToken = randomBytes(32).toString('base64url');
 
@@ -116,6 +118,13 @@ export class BookingsService {
               currency: total.currency,
               fareAmount: total.amount,
               totalAmount: total.amount,
+              ...fxColumns(quote.fx),
+              chargeFareAmount: fare.charge.amount,
+              chargeMarkupAmount: fare.markup.amount,
+              chargeBagsAmount: 0,
+              chargeSeatsAmount: 0,
+              chargeInsuranceAmount: 0,
+              chargeTotalAmount: fare.charge.amount,
               guestTokenHash: sha256Hex(guestToken),
               offerExpiresAt: new Date(priced.expiresAt),
             },
@@ -127,7 +136,7 @@ export class BookingsService {
               toStatus: 'DRAFT',
               actor: 'GUEST',
               message: 'Draft created',
-              data: { priceChanged: priced.priceChanged },
+              data: { priceChanged: priced.priceChanged, fxRate: quote.fx.rate, fxSource: quote.fx.source },
             },
           });
           return created;
@@ -139,7 +148,7 @@ export class BookingsService {
       booking: await this.view(booking),
       guestToken,
       priceChanged: priced.priceChanged,
-      ...(priced.previousTotal ? { previousTotal: priced.previousTotal } : {}),
+      ...(previousTotal ? { previousTotal } : {}),
     };
   }
 
@@ -150,7 +159,7 @@ export class BookingsService {
     let booking = await this.load(id, token);
     if (booking.status === 'CONFIRMING') {
       await this.monitor.warnIfStuck(booking);
-      booking = await this.recover(booking);
+      booking = await this.ticketing.recover(booking, { throttle: true });
     }
     return this.view(booking);
   }
@@ -158,9 +167,10 @@ export class BookingsService {
   async ancillaries(id: string, token: string | undefined): Promise<PublicAncillaries> {
     const booking = await this.load(id, token);
     this.requireStatus(booking, 'DRAFT', 'PENDING_PAYMENT');
-    const ancillaries = await this.fetchAncillaries(booking);
+    const [ancillaries, quote] = await Promise.all([this.fetchAncillaries(booking), this.quoteFor(booking)]);
     return {
       ...ancillaries,
+      bags: ancillaries.bags.map((bag) => ({ ...bag, displayPrice: quote.line(bag.price) })),
       passengerRequirements: {
         ...ancillaries.passengerRequirements,
         identityDocumentRequired: await this.documentRequired(booking, ancillaries),
@@ -168,10 +178,11 @@ export class BookingsService {
     };
   }
 
-  async seatMaps(id: string, token: string | undefined): Promise<SeatMap[]> {
+  async seatMaps(id: string, token: string | undefined): Promise<PublicSeatMap[]> {
     const booking = await this.load(id, token);
     this.requireStatus(booking, 'DRAFT', 'PENDING_PAYMENT');
-    return this.fetchSeatMaps(booking);
+    const [maps, quote] = await Promise.all([this.fetchSeatMaps(booking), this.quoteFor(booking)]);
+    return maps.map((map) => withSeatDisplayPrices(map, quote));
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -208,16 +219,27 @@ export class BookingsService {
     const allIssues: BookingIssue[] = [...kept.issues, ...ruleIssues, ...priced.issues];
 
     const fare = toMoney(booking.fareAmount, booking.currency);
-    let quote: InsuranceQuote | undefined;
+    const quote = await this.quoteFor(booking);
+    const chargeFare = quote.fare(fare);
+    let insuranceQuote: InsuranceQuote | undefined;
     if (body.insurance) {
-      quote = (await this.insurance.quote({ fare }, offer.passengers)).find((q) => q.quoteId === body.insurance!.quoteId);
-      if (!quote) {
+      // Insurance is quoted in the charge currency, on the fare the customer pays.
+      insuranceQuote = (await this.insurance.quote({ fare: chargeFare.charge }, offer.passengers)).find((q) => q.quoteId === body.insurance!.quoteId);
+      if (!insuranceQuote) {
         allIssues.push({ code: 'INSURANCE_QUOTE_INVALID', path: 'insurance.quoteId', message: 'This insurance plan is not available.' });
       }
     }
     if (allIssues.length) throw rulesViolated(allIssues);
 
-    const totals = this.totalsOrBadGateway(fare, priced.lines.map((l) => l.amount), quote?.total ?? null);
+    const lines = priced.lines.map((line) => ({ ...line, charge: quote.line(line.amount) }));
+    const supplier = this.totalsOrBadGateway(() => supplierTotals(fare, lines.map((l) => l.amount)));
+    const charge = chargeTotals(quote.chargeCurrency, {
+      fare: chargeFare.charge,
+      bags: lines.filter((l) => l.entry.kind === 'bag').map((l) => l.charge),
+      seats: lines.filter((l) => l.entry.kind === 'seat').map((l) => l.charge),
+      insurance: insuranceQuote?.total ?? null,
+    });
+
     await this.store.prisma.$transaction(async (tx) => {
       const status = await this.store.lockStatus(tx, id);
       if (status !== 'DRAFT') throw illegalState(status);
@@ -227,7 +249,7 @@ export class BookingsService {
       const idByRef = await this.insertPassengers(tx, id, offer.passengers, kept.passengers);
       await tx.bookingAncillary.createMany({
         data: [
-          ...priced.lines.map((line) => ({
+          ...lines.map((line) => ({
             bookingId: id,
             passengerId: idByRef.get(line.entry.passengerRef) ?? null,
             type: (line.entry.kind === 'bag' ? 'BAG' : 'SEAT') as AncillaryType,
@@ -237,16 +259,18 @@ export class BookingsService {
             quantity: line.quantity,
             amount: line.amount.amount,
             currency: line.amount.currency,
+            chargeAmount: line.charge.amount,
           })),
-          ...(quote
+          ...(insuranceQuote
             ? [{
                 bookingId: id,
                 type: 'INSURANCE' as const,
-                supplierServiceId: quote.quoteId,
-                label: quote.name,
+                supplierServiceId: insuranceQuote.quoteId,
+                label: insuranceQuote.name,
                 quantity: offer.passengers.length,
-                amount: quote.total.amount,
-                currency: quote.total.currency,
+                amount: insuranceQuote.total.amount,
+                currency: insuranceQuote.total.currency,
+                chargeAmount: insuranceQuote.total.amount,
               }]
             : []),
         ],
@@ -260,15 +284,15 @@ export class BookingsService {
           contactFamilyName: contact.familyName ?? null,
           contactEmail: contact.email,
           contactPhone: contact.phone,
-          ancillariesAmount: totals.ancillaries.amount,
-          insuranceAmount: totals.insurance.amount,
-          totalAmount: totals.total.amount,
+          ancillariesAmount: supplier.ancillaries.amount,
+          totalAmount: supplier.total.amount,
+          ...chargeColumns(quote, chargeFare.markup, charge),
         },
       });
       await this.store.recordEvent(tx, id, 'DRAFT', 'GUEST', 'Details updated', {
         passengers: body.passengers.length,
-        services: priced.lines.length,
-        insurance: Boolean(quote),
+        services: lines.length,
+        insurance: Boolean(insuranceQuote),
       });
     }, TX_OPTIONS);
     return { booking: await this.view(await this.store.get(id)), warnings };
@@ -318,7 +342,7 @@ export class BookingsService {
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Checkout: fresh re-price of fare + add-ons, then DRAFT → PENDING_PAYMENT
+  // Checkout: fresh re-price of fare + add-ons at today's exchange rate, then DRAFT → PENDING_PAYMENT
 
   async checkout(id: string, token: string | undefined): Promise<PublicBooking> {
     const booking = await this.load(id, token);
@@ -328,7 +352,7 @@ export class BookingsService {
       throw bookingError(HttpStatus.UNPROCESSABLE_ENTITY, 'DETAILS_INCOMPLETE', 'Add passenger and contact details first.');
     }
 
-    // Bypass every cache: this is the price the customer will pay (real payments in Step 8).
+    // Bypass every cache: this is the price the customer will pay.
     const fresh = await this.supplierCall(booking, 'price', () =>
       this.adapter.price(booking.supplierOfferId, { timeoutMs: SUPPLIER_TIMEOUT_MS }),
     );
@@ -343,11 +367,16 @@ export class BookingsService {
       .map((a) => a.supplierServiceId ?? '');
 
     const fare = fresh.price.total;
+    if (fare.currency !== booking.currency) {
+      throw new BadGatewayException('The flight supplier changed the currency of this offer. Please search again.');
+    }
+    const quote = await this.pricing.quote(fare.currency);
+    const chargeFare = quote.fare(fare);
     const insuranceRow = booking.ancillaries.find((a) => a.type === 'INSURANCE');
-    const quote = insuranceRow
-      ? (await this.insurance.quote({ fare }, offer.passengers)).find((q) => q.quoteId === insuranceRow.supplierServiceId)
+    const insuranceQuote = insuranceRow
+      ? (await this.insurance.quote({ fare: chargeFare.charge }, offer.passengers)).find((q) => q.quoteId === insuranceRow.supplierServiceId)
       : undefined;
-    if (insuranceRow && !quote) unavailable.push(insuranceRow.supplierServiceId ?? '');
+    if (insuranceRow && !insuranceQuote) unavailable.push(insuranceRow.supplierServiceId ?? '');
 
     if (unavailable.length) {
       await this.store.recordEvent(this.store.prisma, id, 'DRAFT', 'SYSTEM', 'Add-ons no longer available at checkout', {
@@ -361,44 +390,55 @@ export class BookingsService {
       );
     }
 
-    const lineAmounts = services.map((a) => ({
-      id: a.id,
-      amount: multiplyMoney(catalogue.get(a.supplierServiceId!)!.unitPrice, a.quantity),
-    }));
-    if (fare.currency !== booking.currency) {
-      throw new BadGatewayException('The flight supplier changed the currency of this offer. Please search again.');
-    }
-    const totals = this.totalsOrBadGateway(fare, lineAmounts.map((l) => l.amount), quote?.total ?? null);
-    const previousTotal = toMoney(booking.totalAmount, booking.currency);
-    const changed = compareMoney(totals.total, previousTotal) !== 0;
+    const lines = services.map((a) => {
+      const amount = multiplyMoney(catalogue.get(a.supplierServiceId!)!.unitPrice, a.quantity);
+      return { id: a.id, type: a.type, amount, charge: quote.line(amount) };
+    });
+    const supplier = this.totalsOrBadGateway(() => supplierTotals(fare, lines.map((l) => l.amount)));
+    const charge = chargeTotals(quote.chargeCurrency, {
+      fare: chargeFare.charge,
+      bags: lines.filter((l) => l.type === 'BAG').map((l) => l.charge),
+      seats: lines.filter((l) => l.type === 'SEAT').map((l) => l.charge),
+      insurance: insuranceQuote?.total ?? null,
+    });
+    // What the customer pays is what matters: compare the charge totals.
+    const previousTotal = displayPriceOf(booking).total;
+    const changed = previousTotal.currency !== charge.total.currency || compareMoney(charge.total, previousTotal) !== 0;
 
     await this.store.prisma.$transaction(async (tx) => {
       const status = await this.store.lockStatus(tx, id);
       if (status !== 'DRAFT') throw illegalState(status);
       // Store the latest amounts either way: what we show is what the supplier just quoted.
-      for (const line of lineAmounts) {
-        await tx.bookingAncillary.update({ where: { id: line.id }, data: { amount: line.amount.amount } });
+      for (const line of lines) {
+        await tx.bookingAncillary.update({ where: { id: line.id }, data: { amount: line.amount.amount, chargeAmount: line.charge.amount } });
       }
-      if (insuranceRow && quote) {
-        await tx.bookingAncillary.update({ where: { id: insuranceRow.id }, data: { amount: quote.total.amount } });
+      if (insuranceRow && insuranceQuote) {
+        await tx.bookingAncillary.update({
+          where: { id: insuranceRow.id },
+          data: { amount: insuranceQuote.total.amount, currency: insuranceQuote.total.currency, chargeAmount: insuranceQuote.total.amount },
+        });
       }
       const patch = {
         offerSnapshot: snapshotOf(fresh),
         supplierRef: fresh.supplierRef as Prisma.InputJsonValue,
         offerExpiresAt: new Date(fresh.expiresAt),
-        fareAmount: totals.fare.amount,
-        ancillariesAmount: totals.ancillaries.amount,
-        insuranceAmount: totals.insurance.amount,
-        totalAmount: totals.total.amount,
+        fareAmount: supplier.fare.amount,
+        ancillariesAmount: supplier.ancillaries.amount,
+        totalAmount: supplier.total.amount,
+        ...chargeColumns(quote, chargeFare.markup, charge),
       };
       if (changed) {
         await tx.booking.update({ where: { id }, data: patch });
         await this.store.recordEvent(tx, id, 'DRAFT', 'SYSTEM', 'Price changed at checkout', {
           previousTotal: { ...previousTotal },
-          newTotal: { ...totals.total },
+          newTotal: { ...charge.total },
         });
       } else {
-        await this.store.transition(id, 'PENDING_PAYMENT', 'GUEST', 'Checkout', { patch, tx });
+        await this.store.transition(id, 'PENDING_PAYMENT', 'GUEST', 'Checkout', {
+          patch,
+          tx,
+          data: { chargeTotal: { ...charge.total }, fxRate: quote.fx.rate, fxSource: quote.fx.source },
+        });
       }
     }, TX_OPTIONS);
 
@@ -406,14 +446,18 @@ export class BookingsService {
       // Stays DRAFT: calling checkout again accepts the new price.
       throw bookingError(HttpStatus.UNPROCESSABLE_ENTITY, 'PRICE_CHANGED', 'The price has changed. Please review the new total.', {
         previousTotal,
-        newTotal: totals.total,
+        newTotal: charge.total,
       });
     }
     return this.view(await this.store.get(id));
   }
 
   // ---------------------------------------------------------------------------------------------
-  // Demo confirmation: PENDING_PAYMENT → CONFIRMING → createOrder → CONFIRMED | FAILED
+  // Demo confirmation (PAYMENT_PROVIDER=demo only): PENDING_PAYMENT → PAID → ticketing inline
+
+  get paymentProvider(): PaymentProvider['name'] {
+    return this.payments.name;
+  }
 
   async confirmDemo(id: string, token: string | undefined, idempotencyKey: string): Promise<ConfirmResult> {
     let booking = await this.load(id, token);
@@ -423,9 +467,10 @@ export class BookingsService {
 
     try {
       // The key is stored in the same locked UPDATE: whoever wins this transition is the only
-      // request that will ever call createOrder for this booking.
-      await this.store.transition(id, 'CONFIRMING', 'GUEST', 'Confirmation started (demo payment)', {
+      // request that will ever start ticketing for this booking.
+      await this.store.transition(id, 'PAID', 'GUEST', 'Paid (demo, no money taken)', {
         patch: { confirmIdempotencyKey: idempotencyKey },
+        data: { provider: 'demo' },
       });
     } catch (err) {
       if (!(err instanceof IllegalTransitionError)) throw err;
@@ -433,29 +478,8 @@ export class BookingsService {
       if (booking.confirmIdempotencyKey) return this.replayConfirm(booking, idempotencyKey);
       throw illegalState(booking.status);
     }
-
-    booking = await this.store.get(id);
-    let result: OrderResult;
-    try {
-      // No request AbortSignal on purpose: a client disconnect must never cancel a booking mid-flight.
-      result = await this.adapter.createOrder(this.orderInput(booking), { timeoutMs: ORDER_TIMEOUT_MS });
-    } catch (err) {
-      // Not a SupplierError = our bug; the booking stays CONFIRMING and the stuck alert reports it.
-      if (!(err instanceof SupplierError)) throw err;
-      logSupplierError(this.logger, `createOrder booking=${id}`, err);
-      if (err.code === 'TIMEOUT') {
-        // The order may exist. Never re-create it: GET /bookings/:id settles via retrieveOrder.
-        await this.store.recordEvent(this.store.prisma, id, 'CONFIRMING', 'SYSTEM', 'Supplier timed out; outcome unknown');
-        return { httpStatus: HttpStatus.ACCEPTED, booking: await this.view(await this.store.get(id)) };
-      }
-      throw await this.fail(booking, err);
-    }
-
-    booking = await this.settle(booking, result);
-    return {
-      httpStatus: booking.status === 'CONFIRMING' ? HttpStatus.ACCEPTED : HttpStatus.OK,
-      booking: await this.view(booking),
-    };
+    // Inline (not queued) so the demo keeps its synchronous 200 / 202 contract.
+    return this.confirmResult(await this.ticketing.ticket(id));
   }
 
   /** Same Idempotency-Key → the same outcome as the first call; a different key → 409. */
@@ -463,176 +487,25 @@ export class BookingsService {
     if (booking.confirmIdempotencyKey !== idempotencyKey) {
       throw bookingError(HttpStatus.CONFLICT, 'IDEMPOTENCY_CONFLICT', 'This booking is already being confirmed with another key.');
     }
+    return this.confirmResult(booking);
+  }
+
+  private async confirmResult(booking: BookingWithDetails): Promise<ConfirmResult> {
     if (booking.status === 'FAILED') {
       const data = (await this.store.lastEventData(booking.id, 'FAILED')) ?? {};
-      throw this.failureException(booking.failureCode as BookingErrorCode, booking.failureReason ?? '', data);
+      throw failureException(booking.failureCode as BookingErrorCode, booking.failureReason ?? '', data);
     }
     return {
-      httpStatus: booking.status === 'CONFIRMING' ? HttpStatus.ACCEPTED : HttpStatus.OK,
+      httpStatus: booking.status === 'CONFIRMED' ? HttpStatus.OK : HttpStatus.ACCEPTED,
       booking: await this.view(booking),
     };
   }
 
-  private orderInput(booking: BookingWithDetails): CreateOrderInput {
-    const refById = new Map(booking.passengers.map((p) => [p.id, p.supplierPassengerId]));
-    return {
-      supplierOfferId: booking.supplierOfferId,
-      supplierRef: booking.supplierRef as Record<string, unknown>,
-      passengers: booking.passengers.map((p) => ({
-        ref: p.supplierPassengerId,
-        type: lower(p.type),
-        title: lower(p.title),
-        gender: lower(p.gender),
-        givenName: p.givenName,
-        // null for mononyms: each adapter applies its own supplier's convention.
-        familyName: p.familyName,
-        dateOfBirth: this.crypto.decrypt(p.dateOfBirthEnc),
-        nationality: p.nationality,
-        ...(p.documentNumberEnc && p.documentIssuingCountry && p.documentExpiryDate
-          ? {
-              document: {
-                type: 'passport' as const,
-                number: this.crypto.decrypt(p.documentNumberEnc),
-                issuingCountry: p.documentIssuingCountry,
-                expiryDate: p.documentExpiryDate.toISOString().slice(0, 10),
-              },
-            }
-          : {}),
-        ...(p.infantAssociatedAdultId ? { associatedAdultRef: refById.get(p.infantAssociatedAdultId) } : {}),
-      })),
-      contact: { email: booking.contactEmail!, phone: booking.contactPhone! },
-      services: booking.ancillaries
-        .filter((a) => a.type !== 'INSURANCE')
-        .map((a) => ({ serviceId: a.supplierServiceId!, quantity: a.quantity })),
-      expectedTotal: supplierTotal(booking),
-      // One order attempt per booking, so the booking id is the supplier-side idempotency key.
-      idempotencyKey: booking.id,
-    };
-  }
-
-  /** Apply an order result. Tolerates a concurrent settle (GET recovery vs. confirm). */
-  private async settle(booking: BookingWithDetails, result: OrderResult): Promise<BookingWithDetails> {
-    if (result.status === 'pending') {
-      if (booking.supplierOrderId !== result.supplierOrderId) {
-        await this.store.update(booking.id, { supplierOrderId: result.supplierOrderId });
-      }
-      return this.store.get(booking.id);
-    }
-    const expected = supplierTotal(booking);
-    if (result.total.currency !== expected.currency || compareMoney(result.total, expected) !== 0) {
-      // Money has already moved: the booking is confirmed regardless; ops must reconcile.
-      this.logger.error(`Order total differs from expected booking=${booking.id} reference=${booking.reference}`);
-    }
-    try {
-      await this.store.transition(booking.id, 'CONFIRMED', 'SYSTEM', 'Order confirmed', {
-        patch: { supplierOrderId: result.supplierOrderId, pnr: result.pnr, confirmedAt: new Date() },
-        data: { supplierOrderId: result.supplierOrderId },
-      });
-    } catch (err) {
-      if (!(err instanceof IllegalTransitionError)) throw err;
-      const current = await this.store.get(booking.id);
-      if (current.status === 'CONFIRMED') return current; // settled by a concurrent request
-      throw err;
-    }
-    this.logger.log(`Booking confirmed id=${booking.id} reference=${booking.reference}`);
-    await this.bindInsurance(booking);
-    return this.store.get(booking.id);
-  }
-
-  private async bindInsurance(booking: BookingWithDetails): Promise<void> {
-    const row = booking.ancillaries.find((a) => a.type === 'INSURANCE');
-    if (!row?.supplierServiceId) return;
-    try {
-      const { policyNumber } = await this.insurance.bind(row.supplierServiceId, { reference: booking.reference });
-      await this.store.update(booking.id, { insurancePolicyNumber: policyNumber });
-      await this.store.recordEvent(this.store.prisma, booking.id, 'CONFIRMED', 'SYSTEM', 'Insurance bound', {
-        provider: this.insurance.name,
-      });
-    } catch (err) {
-      // The flight is booked; a missing policy is an ops follow-up, not a failed booking.
-      this.logger.error(`Insurance bind failed booking=${booking.id}: ${(err as Error).message}`);
-    }
-  }
-
-  private async fail(booking: BookingWithDetails, err: SupplierError): Promise<Error> {
-    const { code, message } = failureOf(err);
-    const data: Record<string, unknown> = { supplierCode: err.code };
-    if (code === 'PRICE_CHANGED') {
-      data.previousTotal = toMoney(booking.totalAmount, booking.currency);
-      // The supplier's new fare + add-ons, plus the insurance the customer opted into. Best effort:
-      // nothing here may throw before the FAILED transition below.
-      if (err.newTotal?.currency === booking.currency) {
-        data.newTotal = bookingTotals(err.newTotal, [], toMoney(booking.insuranceAmount, booking.currency)).total;
-      }
-    }
-    await this.store.transition(booking.id, 'FAILED', 'SYSTEM', `Order failed: ${err.code}`, {
-      patch: { failureCode: code, failureReason: message },
-      data: data as Prisma.InputJsonValue,
-    });
-    return this.failureException(code, message, data);
-  }
-
-  private failureException(code: BookingErrorCode, message: string, data: Record<string, unknown>): Error {
-    switch (code) {
-      case 'PRICE_CHANGED':
-        return bookingError(HttpStatus.UNPROCESSABLE_ENTITY, code, message, {
-          previousTotal: data.previousTotal as Money | undefined,
-          newTotal: data.newTotal as Money | undefined,
-        });
-      case 'BOOKING_EXPIRED':
-      case 'FARE_NO_LONGER_AVAILABLE':
-        return bookingError(HttpStatus.GONE, code, message);
-      case 'BOOKING_REJECTED':
-        return bookingError(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
-      default:
-        return bookingError(HttpStatus.BAD_GATEWAY, 'SUPPLIER_ERROR', message);
-    }
-  }
-
-  /** CONFIRMING after a lost response: ask the supplier whether the order exists (throttled). */
-  private async recover(booking: BookingWithDetails): Promise<BookingWithDetails> {
-    if (booking.supplier !== this.adapter.name) return booking;
-    if (!(await this.acquireRecoverySlot(booking.id))) return booking;
-    const lead = booking.passengers[0];
-    if (!lead) return booking;
-    try {
-      const result = await this.adapter.retrieveOrder(
-        {
-          supplierOrderId: booking.supplierOrderId ?? undefined,
-          idempotencyKey: booking.id,
-          leadPassenger: { givenName: lead.givenName, familyName: lead.familyName },
-          expectedTotal: supplierTotal(booking),
-        },
-        { timeoutMs: RECOVERY_TIMEOUT_MS },
-      );
-      return result ? await this.settle(booking, result) : booking;
-    } catch (err) {
-      if (!(err instanceof SupplierError)) throw err;
-      logSupplierError(this.logger, `retrieveOrder booking=${booking.id}`, err);
-      return booking;
-    }
-  }
-
-  // Redis SET NX as a per-booking rate limit; if Redis is down, recover anyway (fail open).
-  private async acquireRecoverySlot(id: string): Promise<boolean> {
-    if (this.redis.status !== 'ready') return true;
-    try {
-      const ok = await withTimeout(
-        this.redis.set(recoveryKey(id), '1', 'EX', RECOVERY_THROTTLE_SECONDS, 'NX'),
-        REDIS_TIMEOUT_MS,
-        'recovery throttle',
-      );
-      return ok === 'OK';
-    } catch {
-      return true;
-    }
-  }
-
   // ---------------------------------------------------------------------------------------------
-  // Helpers
+  // Helpers (load/view are shared with PaymentsService)
 
   /** Token check + lazy expiry. Unknown id, missing or wrong token all → the same 404. */
-  private async load(id: string, token: string | undefined): Promise<BookingWithDetails> {
+  async load(id: string, token: string | undefined): Promise<BookingWithDetails> {
     const booking = await this.store.find(id);
     if (!booking || !token || !tokenMatches(token, booking.guestTokenHash)) throw bookingNotFound();
     if (EXPIRABLE.includes(booking.status) && booking.offerExpiresAt.getTime() <= Date.now()) {
@@ -646,12 +519,27 @@ export class BookingsService {
     return booking;
   }
 
-  private requireStatus(booking: BookingWithDetails, ...allowed: BookingStatus[]): void {
+  requireStatus(booking: BookingWithDetails, ...allowed: BookingStatus[]): void {
     if (allowed.includes(booking.status)) return;
     if (booking.status === 'EXPIRED') {
       throw bookingError(HttpStatus.GONE, 'BOOKING_EXPIRED', 'This booking has expired. Please search again.');
     }
     throw illegalState(booking.status);
+  }
+
+  async view(booking: BookingWithDetails): Promise<PublicBooking> {
+    const offer = offerOf(booking);
+    const [quotes, trip] = await Promise.all([
+      this.insurance.quote({ fare: displayPriceOf(booking).fare }, offer.passengers),
+      this.trip(booking),
+    ]);
+    return toPublicBooking(booking, { decrypt: (v) => this.crypto.decrypt(v), quotes, paymentProvider: this.payments.name, ...trip });
+  }
+
+  /** The booking's own exchange rate; a fresh one for rows from before payments existed. */
+  private async quoteFor(booking: BookingWithDetails): Promise<PriceQuote> {
+    const fx = hasChargeSnapshot(booking) ? fxSnapshotOf(booking) : null;
+    return fx ? this.pricing.fromSnapshot(fx) : this.pricing.quote(booking.currency);
   }
 
   // A booking can only be served by the supplier it was made with (SUPPLIER may have changed).
@@ -688,9 +576,9 @@ export class BookingsService {
     return value;
   }
 
-  private totalsOrBadGateway(fare: Money, addOns: Money[], insurance: Money | null) {
+  private totalsOrBadGateway<T>(compute: () => T): T {
     try {
-      return bookingTotals(fare, addOns, insurance);
+      return compute();
     } catch {
       // Supplier priced add-ons in another currency than the fare: can't add them up honestly.
       throw new BadGatewayException('The flight supplier returned inconsistent prices. Please try again.');
@@ -710,15 +598,6 @@ export class BookingsService {
   /** The supplier's answer when it gives one; otherwise passports are required on international trips. */
   private async documentRequired(booking: BookingWithDetails, ancillaries: Ancillaries): Promise<boolean> {
     return ancillaries.passengerRequirements.identityDocumentRequired ?? (await this.trip(booking)).international;
-  }
-
-  private async view(booking: BookingWithDetails): Promise<PublicBooking> {
-    const offer = offerOf(booking);
-    const [quotes, trip] = await Promise.all([
-      this.insurance.quote({ fare: toMoney(booking.fareAmount, booking.currency) }, offer.passengers),
-      this.trip(booking),
-    ]);
-    return toPublicBooking(booking, { decrypt: (v) => this.crypto.decrypt(v), quotes, ...trip });
   }
 }
 
@@ -759,44 +638,67 @@ function keepStoredDocuments(
   return { passengers: resolved, issues };
 }
 
+/** Charge columns (+ FX snapshot) for a booking update. */
+function chargeColumns(quote: PriceQuote, markup: Money, charge: ReturnType<typeof chargeTotals>) {
+  return {
+    ...fxColumns(quote.fx),
+    chargeFareAmount: charge.fare.amount,
+    chargeMarkupAmount: markup.amount,
+    chargeBagsAmount: charge.baggage.amount,
+    chargeSeatsAmount: charge.seats.amount,
+    chargeInsuranceAmount: charge.insurance.amount,
+    chargeTotalAmount: charge.total.amount,
+  };
+}
+
+function withSeatDisplayPrices(map: SeatMap, quote: PriceQuote): PublicSeatMap {
+  return {
+    ...map,
+    cabins: map.cabins.map((cabin) => ({
+      ...cabin,
+      rows: cabin.rows.map((row) => ({
+        ...row,
+        sections: row.sections.map((section) => ({
+          elements: section.elements.map((el) =>
+            el.type === 'seat' ? { ...el, services: el.services.map((s) => ({ ...s, displayPrice: quote.line(s.price) })) } : el,
+          ),
+        })),
+      })),
+    })),
+  };
+}
+
 function snapshotOf(offer: PricedOffer): Prisma.InputJsonValue {
   const { priceChanged: _changed, previousTotal: _previous, ...rest } = offer;
   return toPublicOffer(rest) as unknown as Prisma.InputJsonValue;
 }
 
-function offerOf(booking: BookingWithDetails): PublicFlightOffer {
-  return booking.offerSnapshot as unknown as PublicFlightOffer;
-}
-
-/** What the supplier charges: fare + bags/seats (insurance is ours, not the airline's). */
-function supplierTotal(booking: BookingWithDetails): Money {
-  return bookingTotals(
-    toMoney(booking.fareAmount, booking.currency),
-    [toMoney(booking.ancillariesAmount, booking.currency)],
-    null,
-  ).total;
+function offerOf(booking: BookingWithDetails): SupplierOffer {
+  return booking.offerSnapshot as unknown as SupplierOffer;
 }
 
 function fits(entry: CatalogueEntry | undefined, quantity: number): boolean {
   return entry !== undefined && quantity <= entry.maxQuantity;
 }
 
-function failureOf(err: SupplierError): { code: BookingErrorCode; message: string } {
-  switch (err.code) {
+function failureException(code: BookingErrorCode, message: string, data: Record<string, unknown>): Error {
+  switch (code) {
     case 'PRICE_CHANGED':
-      return { code: 'PRICE_CHANGED', message: 'The airline changed the price. Please start a new booking.' };
-    case 'OFFER_EXPIRED':
-    case 'OFFER_NOT_FOUND':
-      // Includes Duffel's offer_request_already_booked: the customer must search again.
-      return { code: 'FARE_NO_LONGER_AVAILABLE', message: FARE_GONE_MESSAGE };
-    case 'INVALID_REQUEST':
-      return { code: 'BOOKING_REJECTED', message: 'The airline rejected the booking details.' };
+      return bookingError(HttpStatus.UNPROCESSABLE_ENTITY, code, message, {
+        previousTotal: data.previousTotal as Money | undefined,
+        newTotal: data.newTotal as Money | undefined,
+      });
+    case 'BOOKING_EXPIRED':
+    case 'FARE_NO_LONGER_AVAILABLE':
+      return bookingError(HttpStatus.GONE, code, message);
+    case 'BOOKING_REJECTED':
+      return bookingError(HttpStatus.UNPROCESSABLE_ENTITY, code, message);
     default:
-      return { code: 'SUPPLIER_ERROR', message: 'The airline could not confirm this booking.' };
+      return bookingError(HttpStatus.BAD_GATEWAY, 'SUPPLIER_ERROR', message);
   }
 }
 
-function illegalState(current: BookingStatus): Error {
+export function illegalState(current: BookingStatus): Error {
   return bookingError(HttpStatus.CONFLICT, 'ILLEGAL_STATE', `This action is not possible while the booking is ${current}.`);
 }
 
@@ -813,8 +715,4 @@ function tokenMatches(token: string, storedHash: string): boolean {
 
 function upper<T extends string>(value: T): Uppercase<T> {
   return value.toUpperCase() as Uppercase<T>;
-}
-
-function lower<T extends string>(value: T): Lowercase<T> {
-  return value.toLowerCase() as Lowercase<T>;
 }

@@ -1,20 +1,17 @@
-import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import type { App } from 'supertest/types.js';
 import type { Redis } from 'ioredis';
 import type { PrismaClient } from '@ota/db';
 import { compareMoney, MockSupplier, offerFingerprint, sumMoney, type FlightOffer, type Money } from '@ota/suppliers';
-import type { PublicBooking, SeatMap, UpdateBookingDetailsInput } from '@ota/contracts';
-import { AppModule } from './../src/app.module.js';
-import { configureApp } from './../src/app.setup.js';
+import type { PublicBooking, PublicFlightOffer, PublicSeatMap, UpdateBookingDetailsInput } from '@ota/contracts';
 import { REDIS_CLIENT } from './../src/redis/redis.module.js';
 import { PRISMA } from './../src/prisma/prisma.module.js';
-import { SUPPLIER_ADAPTER } from './../src/flights/supplier.provider.js';
+import { createTestApp, deleteBookings, deleteKeys } from './test-app.js';
 
-// Offline MockSupplier with a movable clock (the LGW→LHR late-booking scenario depends on it).
-// Requires Postgres (migrated) + Redis. Routes differ from flights.e2e so parallel files don't
-// share cached searches.
+// Offline MockSupplier (USD) with a movable clock (the LGW→LHR late-booking scenario depends on it),
+// fixed FX, PAYMENT_PROVIDER=demo (vitest.config.e2e.ts). Requires Postgres (migrated) + Redis.
+// Routes differ from flights.e2e so parallel files don't share cached searches.
 describe('Bookings (e2e)', () => {
   let app: INestApplication<App>;
   let prisma: PrismaClient;
@@ -32,24 +29,10 @@ describe('Bookings (e2e)', () => {
   const PASSPORT = 'P9876543';
 
   beforeAll(async () => {
-    const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-      .overrideProvider(SUPPLIER_ADAPTER)
-      .useValue(mock)
-      .compile();
-    app = moduleRef.createNestApplication();
-    configureApp(app);
-    await app.init();
+    app = await createTestApp({ supplier: mock });
     prisma = app.get<PrismaClient>(PRISMA);
-
-    const redis = app.get<Redis>(REDIS_CLIENT);
-    if (redis.status !== 'ready') await new Promise<void>((resolve) => redis.once('ready', () => resolve()));
     // Only this suite's keys — never FLUSHALL.
-    let cursor = '0';
-    do {
-      const [next, keys] = await redis.scan(cursor, 'MATCH', 'bookings:*', 'COUNT', 500);
-      if (keys.length) await redis.del(...keys);
-      cursor = next;
-    } while (cursor !== '0');
+    await deleteKeys(app.get<Redis>(REDIS_CLIENT), 'bookings:*');
   });
 
   afterEach(() => {
@@ -58,13 +41,15 @@ describe('Bookings (e2e)', () => {
   });
 
   afterAll(async () => {
-    if (prisma && created.length) await prisma.booking.deleteMany({ where: { id: { in: created } } });
+    if (prisma) await deleteBookings(prisma, created);
     await app?.close();
   });
 
   const api = () => request(app.getHttpServer());
 
-  async function firstOffer(body: object): Promise<FlightOffer> {
+  // The JSON has no supplierRef; typed as FlightOffer for the details() helper (only reads public fields).
+  type TestOffer = FlightOffer & Pick<PublicFlightOffer, 'displayPrice'>;
+  async function firstOffer(body: object): Promise<TestOffer> {
     const res = await api().post('/v1/flights/search').send(body).expect(200);
     return res.body.data[0];
   }
@@ -106,7 +91,7 @@ describe('Bookings (e2e)', () => {
     };
   }
 
-  function firstAvailableSeat(maps: SeatMap[], passengerRef: string): string {
+  function firstAvailableSeat(maps: PublicSeatMap[], passengerRef: string): string {
     for (const row of maps[0].cabins[0].rows) {
       for (const el of row.sections.flatMap((s) => s.elements)) {
         if (el.type !== 'seat') continue;
@@ -144,12 +129,17 @@ describe('Bookings (e2e)', () => {
     expect(draft).toMatchObject({ status: 'DRAFT', supplier: 'mock', demo: true, passengers: [], contact: null });
     expect(draft.reference).toMatch(/^[2-9A-HJ-NP-Z]{8}$/);
     expect(draft.price.total).toEqual(offer.price.total);
-    expect(draft.insurance.quotes[0]).toMatchObject({ quoteId: 'demo-travel-protection', demo: true });
+    // The INR fare the customer saw in the results is the one on the draft.
+    expect(draft.displayPrice).toMatchObject({ currency: 'INR', fare: offer.displayPrice.total, total: offer.displayPrice.total });
+    expect(draft.offer.displayPrice.total).toEqual(offer.displayPrice.total);
+    expect(draft.payment).toEqual({ provider: 'demo', refund: null });
+    expect(draft.insurance.quotes[0]).toMatchObject({ quoteId: 'demo-travel-protection', demo: true, total: { currency: 'INR' } });
     expectNoSecrets(createRes.body);
 
     const anc = await as(token).get(`/v1/bookings/${id}/ancillaries`).expect(200);
     expect(anc.headers['cache-control']).toBe('no-store');
     const bag = anc.body.data.bags.find((b: { weightKg: number }) => b.weightKg === 23);
+    expect(bag.displayPrice).toMatchObject({ currency: 'INR', amount: expect.stringMatching(/^\d+\.00$/) });
     expect(anc.body.data.seatsAvailable).toBe(true);
     const maps = await as(token).get(`/v1/bookings/${id}/seat-maps`).expect(200);
     const seatId = firstAvailableSeat(maps.body.data, offer.passengers[0].ref);
@@ -163,8 +153,12 @@ describe('Bookings (e2e)', () => {
     expect(withDetails.ancillaries.map((a) => a.label)).toEqual(['1 × 23kg checked bag', expect.stringMatching(/^Seat \d+[A-F]$/), 'Travel Protection (Demo)']);
     const p = withDetails.price;
     expect(p.ancillaries.amount).not.toBe('0.00');
-    expect(p.insurance.amount).not.toBe('0.00');
-    expect(p.total).toEqual(sumMoney([p.fare, p.ancillaries, p.insurance], 'USD'));
+    expect(p.total).toEqual(sumMoney([p.fare, p.ancillaries], 'USD'));
+    // INR: every line converted on its own; the total is exactly their sum.
+    const d = withDetails.displayPrice;
+    expect(d.insurance.amount).not.toBe('0.00');
+    expect(d.total).toEqual(sumMoney([d.fare, d.baggage, d.seats, d.insurance], 'INR'));
+    expect(sumMoney(withDetails.ancillaries.map((a) => a.displayAmount), 'INR')).toEqual(sumMoney([d.baggage, d.seats, d.insurance], 'INR'));
     expectNoSecrets(put.body);
 
     const checkout = await as(token).post(`/v1/bookings/${id}/checkout`).expect(200);
@@ -183,7 +177,7 @@ describe('Bookings (e2e)', () => {
     expectNoSecrets(get.body);
 
     const events = await prisma.bookingEvent.findMany({ where: { bookingId: id }, orderBy: { createdAt: 'asc' } });
-    expect(events.filter((e) => e.fromStatus !== e.toStatus).map((e) => e.toStatus)).toEqual(['DRAFT', 'PENDING_PAYMENT', 'CONFIRMING', 'CONFIRMED']);
+    expect(events.filter((e) => e.fromStatus !== e.toStatus).map((e) => e.toStatus)).toEqual(['DRAFT', 'PENDING_PAYMENT', 'PAID', 'CONFIRMING', 'CONFIRMED']);
     expect(JSON.stringify(events)).not.toContain(PASSPORT);
   });
 
@@ -332,7 +326,7 @@ describe('Bookings (e2e)', () => {
     const supplierIds = async (id: string) =>
       prisma.booking.findUniqueOrThrow({ where: { id }, select: { supplierOfferId: true, supplierOrderId: true } });
 
-    async function confirm(offer: FlightOffer, id: string, token: string, key: string) {
+    async function confirm(offer: TestOffer, id: string, token: string, key: string) {
       await as(token).put(`/v1/bookings/${id}/details`, details(offer)).expect(200);
       await as(token).post(`/v1/bookings/${id}/checkout`).expect(200);
       return as(token).post(`/v1/bookings/${id}/confirm-demo`, key);
@@ -394,8 +388,10 @@ describe('Bookings (e2e)', () => {
         (await MockSupplier.prototype.search.call(mock, req, opts)).map((o) => ({ ...o, price: { ...o.price, total: raised } })),
       );
       const { res } = await createBooking(offer);
-      expect(res.body.meta).toMatchObject({ priceChanged: true, previousTotal: offer.price.total });
+      // previousTotal is what the customer saw — in INR.
+      expect(res.body.meta).toMatchObject({ priceChanged: true, previousTotal: offer.displayPrice.total });
       expect(res.body.data.price.total).toEqual(raised);
+      expect(compareMoney(res.body.data.displayPrice.total, offer.displayPrice.total)).toBe(1);
     });
 
     it('the fresh results are written to the search cache', async () => {
@@ -442,13 +438,15 @@ describe('Bookings (e2e)', () => {
       clockShiftMs = 30 * day; // departure now 10 days away
       const res = await as(token).post(`/v1/bookings/${id}/checkout`).expect(422);
       expect(res.body.code).toBe('PRICE_CHANGED');
-      expect(res.body.previousTotal).toEqual(before.price.total);
-      expect(compareMoney(res.body.newTotal, before.price.total)).toBe(1);
+      // What the customer pays (INR) is compared and reported.
+      expect(res.body.previousTotal).toEqual(before.displayPrice.total);
+      expect(compareMoney(res.body.newTotal, before.displayPrice.total)).toBe(1);
 
       const after = (await as(token).get(`/v1/bookings/${id}`)).body.data as PublicBooking;
       expect(after.status).toBe('DRAFT');
-      expect(after.price.total).toEqual(res.body.newTotal);
+      expect(after.displayPrice.total).toEqual(res.body.newTotal);
       expect(after.offer.price.total).toEqual(after.price.fare);
+      expect(after.offer.displayPrice.total).toEqual(after.displayPrice.fare);
       const ok = await as(token).post(`/v1/bookings/${id}/checkout`).expect(200);
       expect(ok.body.data.status).toBe('PENDING_PAYMENT');
       const events = await prisma.bookingEvent.findMany({ where: { bookingId: id, message: 'Price changed at checkout' } });
